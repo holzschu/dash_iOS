@@ -425,6 +425,7 @@ FORKRESET {
  * Move a file descriptor to > 10.  Invokes sh_error on error unless
  * the original file dscriptor is not open.
  */
+// iOS: savefd (and specifically the call to fcntl(from, F_DUPFD, 10); is the reason for the crash on iOS.
 
 int
 savefd(int from, int ofd)
