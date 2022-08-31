@@ -96,7 +96,8 @@ freestdout()
 
 #define OUTPUT_ERR 01		/* error occurred on output */
 
-#ifdef USE_GLIBC_STDIO
+#include <TargetConditionals.h>
+#if defined(USE_GLIBC_STDIO) && !TARGET_OS_IPHONE
 static inline void outc(int ch, struct output *file)
 {
 	putc(ch, file->stream);

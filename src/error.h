@@ -116,7 +116,8 @@ void __inton(void);
 #define int_pending() intpending
 
 // iOS: using noreturn causes the compiler to optimize stuff, which causes a crash because, well, we *do* return.
-#if TARGET_OS_IPHONE
+#include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
   void exraise(int) __attribute__((__noreturn__));
   #ifdef USE_NORETURN
     void onint(void) __attribute__((__noreturn__));
