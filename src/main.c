@@ -264,7 +264,6 @@ cmdloop(int top)
 }
 
 
-
 /*
  * Read /etc/profile or .profile.  Return on error.
  */

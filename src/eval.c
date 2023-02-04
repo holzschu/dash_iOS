@@ -622,6 +622,7 @@ evalpipe(union node *n, int flags)
 	flags &= ~EV_EXIT; // do not exit after each command
 	// Try: call all commands, but wait for last one in the pipe. 
 	// Question is: how? make evaltree return pid, wait for all pid? 
+	int interactiveStatusBefore = ios_storeInteractive(); // store interactive status.
 	int pid = ios_fork();
 	for (int j = pipelen - 1; j >= 1; j--) {
 		if (pipe(pip) < 0) {
@@ -637,7 +638,11 @@ evalpipe(union node *n, int flags)
 	evaltree(lplist[0]->n, flags | EV_NOFORK); // start the first command and wait for it to finish
 	// Now wait for the last command at the end of the pipe to finish:
 	ios_waitpid(pid); 
-	ios_stopInteractive(); 
+	// restore "interactive" status
+	if (interactiveStatusBefore) 
+		ios_startInteractive(); 
+	else
+		ios_stopInteractive(); 
 	status = ios_getCommandStatus();
 	free(lplist);
 #endif
@@ -941,13 +946,17 @@ bail:
 	default:
 #if TARGET_OS_IPHONE
 		if (!(flags & EV_NOFORK)) {
+			int interactiveStatusBefore = ios_storeInteractive(); 
 			int pid = ios_fork();
 			ios_execv(argv[0], argv);
 			ios_waitpid(pid);
 			// store the result of executing the command:
 			exitstatus = ios_getCommandStatus(); 
 			// if the user started an interactive command (Vim), tell ios_system to handle key events again:
-			ios_stopInteractive(); 
+			if (interactiveStatusBefore) 
+				ios_startInteractive(); 
+			else
+				ios_stopInteractive(); 
 			break;
 		} else {
 			ios_execv(argv[0], argv);
@@ -1219,10 +1228,14 @@ execcmd(int argc, char **argv)
 		mflag = 0;
 		optschanged();
 #if TARGET_OS_IPHONE
+		int interactiveStatusBefore = ios_storeInteractive();
 		int pid = ios_fork();
 		ios_execv(argv[1], argv+1);
 		ios_waitpid(pid);
-		ios_stopInteractive(); 
+		if (interactiveStatusBefore) 
+			ios_startInteractive(); 
+		else
+			ios_stopInteractive(); 
 #else 		
 		shellexec(argv + 1, pathval(), 0);
 #endif

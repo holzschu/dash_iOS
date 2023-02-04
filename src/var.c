@@ -106,7 +106,11 @@ struct var varinit[] = {
 #endif
 };
 
+#if !TARGET_OS_IPHONE
 STATIC struct var *vartab[VTABSIZE];
+#else
+STATIC __thread struct var *vartab[VTABSIZE];
+#endif
 
 STATIC struct var **hashvar(const char *);
 STATIC int vpcmp(const void *, const void *);

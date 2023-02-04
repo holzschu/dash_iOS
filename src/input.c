@@ -84,6 +84,10 @@ INCLUDE "error.h"
 INIT {
 	basepf.nextc = basepf.buf = basebuf;
 	basepf.linno = 1;
+#if TARGET_OS_IPHONE
+	extern __thread FILE* thread_stdin;
+	basepf.fd = fileno(thread_stdin);
+#endif
 }
 
 RESET {
