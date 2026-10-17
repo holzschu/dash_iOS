@@ -1,0 +1,101 @@
+// Exercise the real Dash command entry with caller-owned streams.
+#import <Foundation/Foundation.h>
+#import <ios_system/ios_system.h>
+#include <dlfcn.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <limits.h>
+#include <unistd.h>
+
+static int (*shellMain)(int, char **);
+
+int pipeline_shell_main(int argc, char **argv) {
+    return shellMain(argc, argv);
+}
+
+int pipeline_first_main(int argc, char **argv) {
+    char *line = NULL;
+    size_t capacity = 0;
+    ssize_t length = getline(&line, &capacity, thread_stdin);
+    int status = length > 0 && fwrite(line, 1, length, thread_stdout) == (size_t)length ? 0 : 1;
+    free(line);
+    return status;
+}
+
+static void timedOut(int signal) {
+    const char message[] = "pipeline regression timed out\n";
+    write(STDERR_FILENO, message, sizeof(message) - 1);
+    _Exit(124);
+}
+
+int main(int argc, char **argv) {
+    @autoreleasepool {
+        if (argc != 3) return 2;
+        signal(SIGALRM, timedOut);
+        alarm(5);
+        void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+        if (!library || !(shellMain = dlsym(library, "main"))) {
+            dprintf(STDERR_FILENO, "Cannot load Dash: %s\n", dlerror());
+            return 2;
+        }
+        const char *script, *expected;
+        int expectedStatus = 0;
+        if (!strcmp(argv[2], "group")) {
+            script = "{ printf 'one\\n'; printf 'two\\n'; } | first-line";
+            expected = "one\n";
+        } else if (!strcmp(argv[2], "early-reader")) {
+            script = "{ while :; do printf 'x\\n'; done; } | first-line";
+            expected = "x\n";
+        } else if (!strcmp(argv[2], "heredoc")) {
+            script = "first-line <<EOF | first-line\none\ntwo\nEOF\n";
+            expected = "one\n";
+        } else if (!strcmp(argv[2], "subshell-next")) {
+            script = "(exit 7); printf 'next\\n'";
+            expected = "next\n";
+        } else if (!strcmp(argv[2], "subshell-status")) {
+            script = "(exit 7)";
+            expected = "";
+            expectedStatus = 7;
+        } else return 2;
+        initializeEnvironment();
+        ios_switchSession("pipeline-regression");
+        // Dash resolves external commands through PATH before ios_system dispatch.
+        char markerDirectory[PATH_MAX];
+        snprintf(markerDirectory, sizeof(markerDirectory), "%spipeline-markers.XXXXXX", NSTemporaryDirectory().fileSystemRepresentation);
+        if (!mkdtemp(markerDirectory)) return 2;
+        char markerPath[PATH_MAX];
+        snprintf(markerPath, sizeof(markerPath), "%s/first-line", markerDirectory);
+        FILE *marker = fopen(markerPath, "w");
+        if (!marker || fclose(marker) || chmod(markerPath, 0755)) return 2;
+        ios_setenv("PATH", markerDirectory, 1);
+        FILE *input = tmpfile(), *output = tmpfile(), *error = tmpfile();
+        if (!input || !output || !error) return 2;
+        void *registration = NULL;
+        if (ashell_register_owned_streams(input, output, error, &registration)) return 2;
+        ios_setStreams(input, output, error);
+        replaceCommand(@"dash", @"pipeline_shell_main", false);
+        replaceCommand(@"first-line", @"pipeline_first_main", false);
+        // Quote embedded apostrophes for the outer ios_system command parser.
+        NSString *quoted = [[NSString stringWithUTF8String:script] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
+        NSString *command = [NSString stringWithFormat:@"dash -c '%@'", quoted];
+        joinMainThread = false;
+        pid_t root = ios_fork();
+        ios_system(command.UTF8String);
+        ios_waitpid(root);
+        ashell_wait_owned_streams(registration);
+        int status = ios_getCommandStatus();
+        ashell_unregister_owned_streams(&registration);
+        rewind(output);
+        char actual[64] = {0};
+        size_t length = fread(actual, 1, sizeof(actual) - 1, output);
+        BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus;
+        ios_setStreams(stdin, stdout, stderr);
+        if (fclose(input) || fclose(output) || fclose(error)) return 1;
+        alarm(0);
+        dprintf(STDERR_FILENO, "Dash %s: status=%d bytes=%zu %s\n", argv[2], status, length, passed ? "PASS" : "FAIL");
+        dlclose(library);
+        unlink(markerPath);
+        rmdir(markerDirectory);
+        return passed ? 0 : 1;
+    }
+}
