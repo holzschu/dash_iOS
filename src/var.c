@@ -131,7 +131,15 @@ INIT {
 	struct stat64 st1, st2;
 
 	initvar();
-	for (envp = environ ; *envp ; envp++) {
+#if TARGET_OS_IPHONE
+	/* Import the forked command environment, including the pane's native PS1. */
+	extern char **environmentVariables(pid_t);
+	extern pid_t ios_currentPid(void);
+	envp = environmentVariables(ios_currentPid());
+#else
+	envp = environ;
+#endif
+	for (; *envp ; envp++) {
 		p = endofname(*envp);
 		if (p != *envp && *p == '=') {
 			setvareq(*envp, VEXPORT|VTEXTFIXED);

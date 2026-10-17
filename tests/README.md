@@ -32,3 +32,40 @@ done
 ```
 
 The baseline leaks a grouped producer's second line into the caller output, times out after an infinite builtin producer loses its reader, and exits the enclosing shell after `(exit 7)` instead of running the next command. The patched results are `group: status=0 bytes=4`, `early-reader: status=0 bytes=2`, `heredoc: status=0 bytes=4`, `subshell-next: status=0 bytes=5`, and `subshell-status: status=7 bytes=0`, each with `PASS`. The same executable tests both libraries. These checks do not qualify interactive libedit hooks or physical-device behavior.
+
+# Socket command input
+
+`socket-input.m` is an embedding consumer of Dash's real entry and the public ios_system APIs. It supplies caller-owned socket streams and optional foreground-input callbacks. The registered `socket-cat` command reads an actual pipe; its CR, Ctrl-D and escape bytes bypass the line editor. Cancellation uses the published foreground PID to cancel that reader, including inside `eval`, and then runs another command. It does not qualify nested interpreter loading or a complete TUI.
+
+Build with the input-lease API from holzschu/ios_system#183, session preservation from #184, native descriptor detection from #182, and the pipeline prerequisite from holzschu/dash_iOS#1. The native framework used for these checks also includes ios_system#179. Use a framework built from those commits, its matching command dictionary, and a Simulator you own. The libedit dependency must include `libedit-socket.patch`: upstream libedit's NO_TTY path otherwise bypasses editing even with a custom reader.
+
+Download `https://thrysoee.dk/editline/libedit-20260512-3.1.tar.gz` and verify SHA256 `432d5e7ea8b0116dd39f2eca7bc11d0eed77faa6b77ea526ace89907c23ea4a0`. Extract it into `.build/libedit`, apply the patch with `patch -p1`, and build from that directory:
+
+```sh
+mkdir -p local
+cp "$host_sdk/usr/include/termcap.h" "$host_sdk/usr/include/ncurses_dll.h" local/
+./configure --build=x86_64-apple-darwin --host=armv8-apple-darwin --disable-shared --enable-static --disable-readline CC=clang CFLAGS="-target arm64-apple-ios15.0-simulator -isysroot $simulator_sdk -I$PWD/local" CPPFLAGS="-I$PWD/local" LDFLAGS="-target arm64-apple-ios15.0-simulator -isysroot $simulator_sdk"
+make -C src -j2
+```
+
+Make a fresh disposable Dash source copy as above. Copy `.build/libedit/src/histedit.h` into its `src/` directory so the bundled older header cannot shadow the matching dependency header. Add `--with-libedit` to Dash's configure command and `-L$source_root/.build/libedit/src/.libs` to its LDFLAGS; set `LIBS=-lncurses`. Compile and run from the repository root:
+
+```sh
+xcrun --sdk iphonesimulator clang -target arm64-apple-ios15.0-simulator -fobjc-arc -Wall -Wextra -Wno-unused-parameter -F .build/probe/Frameworks -framework ios_system -framework Foundation -Wl,-rpath,@executable_path/Frameworks -Wl,-export_dynamic tests/socket-input.m -o .build/probe/socket-input
+for scenario in line context foreground delete raw cancel nested-cancel resize repeat; do
+    xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/.build/probe/socket-input" "$PWD/.build/dash/src/dash" "$scenario"
+done
+```
+
+The `line` case checks UTF-8 input and Return; `context` checks the command-session environment. `foreground` checks reader EOF, `delete` keeps the idle shell alive after Ctrl-D, and `raw` checks exact control bytes. Both cancellation cases keep the reader's input writer open until cancellation completes. `resize` delivers a real event while input is pending, verifies event consumption and completes that line. `repeat` loads, runs and closes Dash eight times in one process. Every case requires the same shell to print `NEXT_OK` before exiting. An alarm bounds a run at twelve seconds. The identical executable fails on the pipeline-only baseline and passes on this branch; the five pipeline regression cases also remain green. Device behavior and terminal-cell reflow need app-level qualification.
+
+Socket consumers opt in with `ASHELL_IOS_SOCKET_INPUT=1`. They may export these optional functions in the embedding process:
+
+```c
+int ashell_pane_begin_foreground_input(FILE **input, void **lease);
+int ashell_pane_end_foreground_input(void *lease);
+int ashell_pane_exchange_foreground_pid(int pid);
+int ashell_pane_wait_editor_input(FILE *input);
+```
+
+Begin installs a borrowed command stream and returns a lease; end waits for its users before closing it. Both return zero on success or an errno value. Dash restores its editor input and retires the lease when evaluation raises a shell exception. Background evaluation does not acquire foreground input. PID exchange returns the previous PID; negative PIDs identify shell waiters and must never be cancellation targets. The editor wait callback returns 0 for ready input, 1 for resize plus ready input, 2 for resize only, or a negative errno. Update the command thread's COLUMNS/LINES before returning a resize event. The callback runs before the builtin Unicode reader, so it must account for the consumer's input buffering. Without the optional exports, Dash retains its regular evaluation path.
