@@ -53,6 +53,7 @@
 #include "mystring.h"
 #if TARGET_OS_IPHONE
 #include "ios_error.h"
+#include "input.h"
 #endif
 
 /*
@@ -403,6 +404,13 @@ exitshell(void)
 	}
 out:
 	exitreset();
+#if TARGET_OS_IPHONE
+	popallfiles();
+	if (parsefile->fd > 0) {
+		close(parsefile->fd);
+		parsefile->fd = 0;
+	}
+#endif
 	/*
 	 * Disable job control so that whoever had the foreground before we
 	 * started can get it back.

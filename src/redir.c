@@ -280,6 +280,18 @@ dupredirect(redir, f)
 	if (redir->nfile.type == NTOFD || redir->nfile.type == NFROMFD) {
 		/* if not ">&-" */
 		if (f >= 0) {
+#if TARGET_OS_IPHONE
+			int owned = 0;
+			if (fd <= 2 && f > 2) {
+				int g = fcntl(f, F_DUPFD_CLOEXEC, 10);
+				if (g < 0) {
+					err = errno;
+					goto err;
+				}
+				f = g;
+				owned = 1;
+			}
+#endif
 #ifdef notyet
 			if (memory[f])
 				memory[fd] = 1;
@@ -287,6 +299,10 @@ dupredirect(redir, f)
 #endif
 				if (dup2(f, fd) < 0) {
 					err = errno;
+#if TARGET_OS_IPHONE
+					if (owned)
+						close(f);
+#endif
 					goto err;
 				}
 			return;
@@ -388,8 +404,8 @@ popredir(int drop)
 			// And dup2 is going to create issues too.
 			if (!drop)
 				dup2(rp->renamed[i], i);
-			close(rp->renamed[i]);
 #endif
+			close(rp->renamed[i]);
 			break;
 		}
 	}
