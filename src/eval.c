@@ -621,11 +621,24 @@ eval_pipeline_producer(struct nodelist **commands, int flags)
 	struct redirtab *redir_stop = pushredir(NULL);
 	int saveevalskip = evalskip;
 	int saveloopnest = loopnest;
+	struct cmdentry entry;
+	union node *command = commands[0]->n;
+	int owned = 0;
 	int saveint;
 	int raised;
+	/* Let ios_system own a simple external producer's pending pipe. Activating
+	 * it here would borrow it to the child and postpone EOF until after the
+	 * synchronous WebAssembly queue has already started the consumer.
+	 */
+	if (command->type == NCMD && command->ncmd.args &&
+	    goodname(command->ncmd.args->narg.text)) {
+		find_command(command->ncmd.args->narg.text, &entry, 0, pathval());
+		owned = entry.cmdtype == CMDNORMAL;
+	}
 	// Keep the producer's streams active across the entire syntax tree, rather
 	// than letting its first builtin consume and close the pending redirect.
-	ios_activateChildStreams(&producer.input, &producer.output, &producer.error);
+	if (!owned)
+		ios_activateChildStreams(&producer.input, &producer.output, &producer.error);
 	pipeline_stdout = producer.output ? thread_stdout : NULL;
 	SAVEINT(saveint);
 	setstackmark(&smark);
