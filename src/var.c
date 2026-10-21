@@ -123,7 +123,7 @@ INCLUDE <sys/stat.h>
 INCLUDE "cd.h"
 INCLUDE "output.h"
 INCLUDE "var.h"
-MKINIT char **environ;
+INCLUDE "ios_error.h"
 INIT {
 	char **envp;
 	static char ppid[32] = "PPID=";
@@ -131,7 +131,9 @@ INIT {
 	struct stat64 st1, st2;
 
 	initvar();
-	for (envp = environ ; *envp ; envp++) {
+	/* the per-command environment of ios_system, not the process-global environ */
+	envp = environmentVariables(ios_currentPid());
+	for (; envp && *envp ; envp++) {
 		p = endofname(*envp);
 		if (p != *envp && *p == '=') {
 			setvareq(*envp, VEXPORT|VTEXTFIXED);
