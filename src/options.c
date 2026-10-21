@@ -138,6 +138,7 @@ procargs(int argc, char **argv)
 		login = 1;
 		setenv("_DASH_LOGIN_SHELL", "1", 1);
 	}
+	minusc = NULL;
 #endif
 	arg0 = xargv[0];
 	if (argc > 0)
@@ -177,6 +178,10 @@ setarg0:
 	shellparam.p = xargv;
 	shellparam.optind = 1;
 	shellparam.optoff = -1;
+#if TARGET_OS_IPHONE
+	shellparam.nparam = 0;
+	shellparam.malloc = 0;
+#endif
 	/* assert(shellparam.malloc == 0 && shellparam.nparam == 0); */
 	while (*xargv) {
 		shellparam.nparam++;

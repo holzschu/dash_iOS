@@ -87,6 +87,8 @@ INIT {
 #if TARGET_OS_IPHONE
 	extern __thread FILE* thread_stdin;
 	basepf.fd = fileno(thread_stdin);
+	memset(basebuf, 0, IBUFSIZ * sizeof(char));
+	parsefile = &basepf;
 #endif
 }
 

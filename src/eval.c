@@ -68,6 +68,8 @@
 #if TARGET_OS_IPHONE
 #include "ios_error.h"
 #define EV_NOFORK 4 /* don't wait after starting a command -- required for pipes */
+#include <fcntl.h>
+extern void	setpwd(const char *, int);
 #endif
 
 
@@ -325,7 +327,6 @@ exexit:
 	}
 
 	popstackmark(&smark);
-
 	return exitstatus;
 }
 
@@ -555,6 +556,9 @@ expredir(union node *n)
  * of the shell, which make the last process in a pipeline the parent
  * of all the rest.)
  */
+#if TARGET_OS_IPHONE
+extern void ios_IsMainThread(int value);
+#endif
 
 STATIC int
 evalpipe(union node *n, int flags)
@@ -622,6 +626,9 @@ evalpipe(union node *n, int flags)
 	flags &= ~EV_EXIT; // do not exit after each command
 	// Try: call all commands, but wait for last one in the pipe. 
 	// Question is: how? make evaltree return pid, wait for all pid? 
+	// TODO (may 2023): This creates issues when a command is piped into a subshell. 
+	// Keep the stream ordering, start commands in order, wait for the last one to end.
+	ios_IsMainThread(0);
 	int interactiveStatusBefore = ios_storeInteractive(); // store interactive status.
 	int pid = ios_fork();
 	for (int j = pipelen - 1; j >= 1; j--) {
@@ -635,6 +642,7 @@ evalpipe(union node *n, int flags)
 		ios_dup2(pip[1], STDOUT_FILENO);
 	}
 	// j == 0, special case (no need to call dup2):
+	ios_IsMainThread(1);
 	evaltree(lplist[0]->n, flags | EV_NOFORK); // start the first command and wait for it to finish
 	// Now wait for the last command at the end of the pipe to finish:
 	ios_waitpid(pid); 
@@ -693,6 +701,7 @@ evalbackcmd(union node *n, struct backcmd *result)
 	thread_stdout = fdopen(pip[1], "w");
 	ifsfree();
 	evaltree(n, 0);
+	fclose(thread_stdout); // otherwise we leak one file descriptor
 	thread_stdout = old_stdout;
 #endif
 	result->fd = pip[0];
@@ -792,6 +801,9 @@ evalcommand(union node *cmd, int flags)
 	char **nargv;
 	int vflags;
 	int vlocal;
+#if TARGET_OS_IPHONE
+	char* argv_0;
+#endif
 
 	errlinno = lineno = cmd->ncmd.linno;
 	if (funcline)
@@ -823,6 +835,7 @@ evalcommand(union node *cmd, int flags)
 		int pseudovarflag = 0;
 
 		for (;;) {
+			
 			find_command(arglist.list->text, &cmdentry,
 				     cmd_flag | DO_REGBLTIN, pathval());
 
@@ -881,6 +894,7 @@ evalcommand(union node *cmd, int flags)
 	preverrout.fd = 2;
 #if TARGET_OS_IPHONE
 	preverrout.stream = thread_stdout;
+	argv_0 = NULL;
 #endif
 	expredir(cmd->ncmd.redirect);
 	redir_stop = pushredir(cmd->ncmd.redirect);
@@ -907,6 +921,7 @@ bail:
 			mklocal((*spp)->text, VEXPORT);
 		else
 			setvareq((*spp)->text, vflags);
+		
 	}
 
 	/* Print the command if xflag is set. */
@@ -930,6 +945,26 @@ bail:
 	    !(cmdentry.u.cmd->flags & BUILTIN_REGULAR)) {
 		path = unlikely(path) ? path : pathval();
 		find_command(argv[0], &cmdentry, cmd_flag | DO_ERR, path);
+
+#if TARGET_OS_IPHONE
+		// iOS addition to get command.wasm3 commands:
+		if (cmdentry.cmdtype == CMDUNKNOWN) {
+			char* newName = malloc(strlen(argv[0]) + strlen(".wasm3") + 1);
+			sprintf(newName, "%s.wasm3", argv[0]);
+			find_command(newName, &cmdentry, cmd_flag | DO_ERR, path);
+			if (cmdentry.cmdtype == CMDNORMAL) {
+				// I can't delete argv[0] yet (causes a crash)
+				// but I need to delete newName.
+				argv_0 = argv[0];
+				argv[0] = newName;
+			} else {
+				free(newName);
+				sh_warnx("%s: %s", argv[0], errmsg(ENOENT, E_EXEC));
+			}
+		}
+		if (cmdentry.cmdtype == CMDERROR) 
+			cmdentry.cmdtype = CMDUNKNOWN;
+#endif
 	}
 
 	jp = NULL;
@@ -947,20 +982,36 @@ bail:
 #if TARGET_OS_IPHONE
 		if (!(flags & EV_NOFORK)) {
 			int interactiveStatusBefore = ios_storeInteractive(); 
+			int stdinFlagsBefore = fcntl(fileno(thread_stdin), F_GETFL);
 			int pid = ios_fork();
-			ios_execv(argv[0], argv);
+			char** localEnvironment = listvars(0,0,NULL);
+			// pass the env variables to exec (including local vars)
+			// this is so "var=name ./scriptname" works
+			ios_execve(argv[0], argv, localEnvironment);
 			ios_waitpid(pid);
 			// store the result of executing the command:
 			exitstatus = ios_getCommandStatus(); 
 			// if the user started an interactive command (Vim), tell ios_system to handle key events again:
-			if (interactiveStatusBefore) 
+			if (interactiveStatusBefore)
 				ios_startInteractive(); 
 			else
 				ios_stopInteractive(); 
+			// free the list allocated by listvars 
+			stunalloc(localEnvironment);
+			// reset stdin to non-blocking:
+			fcntl(fileno(thread_stdin), F_SETFL, stdinFlagsBefore);
+			// set PWD to the proper value (but don't set OLDPWD)
+			setpwd(NULL, 0);
 			break;
 		} else {
+			// no execve here because without fork we share the same environment
 			ios_execv(argv[0], argv);
 			break;
+		}
+		if (argv_0 != NULL) {
+			// restore the old value of argv[0] so cleanup works:
+			free(argv[0]);
+			argv[0] = argv_0;
 		}
 #else 		
 		/* Fork off a child process if necessary. */
@@ -1042,15 +1093,21 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 			thread_stdin = old_stdin;
 		}
 		if (old_stderr != NULL) {
+			fflush(thread_stderr);
 			if (thread_stderr != thread_stdout) {
-				fflush(thread_stderr); 
-				fclose(thread_stderr); 
+				// Avoid closing ourselves (it can happen)
+				if (fileno(old_stderr) != fileno(thread_stderr)) {
+					fclose(thread_stderr); 
+				}
 			}
 			thread_stderr = old_stderr;
 		}
 		if (old_stdout != NULL) {
 			fflush(thread_stdout);
-			fclose(thread_stdout);
+			// Avoid closing ourselves (it can happen)
+			if (fileno(thread_stdout) != fileno(old_stdout)) {
+				fclose(thread_stdout);
+			}
 			thread_stdout = old_stdout;
 		}
 #endif

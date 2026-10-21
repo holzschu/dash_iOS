@@ -152,7 +152,10 @@ main(int argc, char **argv)
 	login = procargs(argc, argv);
 	if (login) {
 		state = 1;
+#if !TARGET_OS_IPHONE
+		// this causes an issue on jailbroken devices, because the file exists!
 		read_profile("/etc/profile");
+#endif
 state1:
 		state = 2;
 #if !TARGET_OS_IPHONE

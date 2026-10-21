@@ -77,7 +77,7 @@ struct redirtab {
 };
 
 
-MKINIT struct redirtab *redirlist;
+MKINIT __thread struct redirtab *redirlist;
 
 /* Bit map of currently closed file descriptors. */
 #if !TARGET_OS_IPHONE
@@ -304,6 +304,10 @@ dupredirect(redir, f)
 	} else if (dup2(f, fd) < 0)
 		err = errno;
 
+#if TARGET_OS_IPHONE
+	// We try to close as many fd as possible, but make sure "pkg" works
+	if (fd >= 3)  // don't close stdin/stdout/stderr
+#endif
 	close(f);
 	if (err < 0)
 		goto err;
@@ -388,8 +392,11 @@ popredir(int drop)
 				close(i);
 			break;
 		default:
+#if !TARGET_OS_IPHONE
+			// This doesn't have an effect on iOS, and it breaks the next command if builtin (ls > 1; echo Hello)
 			if (!drop)
 				dup2(rp->renamed[i], i);
+#endif
 			close(rp->renamed[i]);
 			break;
 		}
@@ -430,7 +437,10 @@ FORKRESET {
  * the original file dscriptor is not open.
  */
 // iOS: savefd (and specifically the call to fcntl(from, F_DUPFD, 10); is the reason for the crash on iOS.
-// iOS 16.3:  fcntl(from, F_DUPFD, 10) works now???
+// iOS 16.3: fcntl(from, F_DUPFD, 10) works now???
+// iOS 26.3: fcntl(from, F_DUPFD, 10) is crashing again.
+// savefd is crashing because from (here, 3) is guarded (EXC_GUARD). But that is very challenging to change.
+//
 
 int
 savefd(int from, int ofd)
@@ -439,21 +449,24 @@ savefd(int from, int ofd)
 	int err;
 
 	newfd = fcntl(from, F_DUPFD, 10);
- /* In case it breaks again, here is a replacement for F_DUPFD:
-	newfd = -1;
+
+ /* In case it breaks again, here is a replacement for F_DUPFD: */
+	/* newfd = -1;
 	struct rlimit limitFilesOpen;
     // Store the maximum number of file descriptors allowed:
     getrlimit(RLIMIT_NOFILE, &limitFilesOpen);
 	for (int tmpfd = 10; tmpfd < limitFilesOpen.rlim_cur; tmpfd++) {
 		errno = 0;
 		int flags = fcntl(tmpfd, F_GETFD, 0);
-		if (flags == -1 && errno) {
+		if ((flags == -1) && errno) {
 			// first file descriptor not open:
 			newfd = tmpfd;
 			break;
 		}
 	}
 	if (newfd > 0) {
+		// iOS 26: this line crashes whether I use fcntl or dup2.
+		// fcntl(from, F_DUPFD, newfd);
 		dup2(from, newfd);
 	}
 */
@@ -461,6 +474,7 @@ savefd(int from, int ofd)
 	if (err != EBADF) {
 #if TARGET_OS_IPHONE
 		// if ((ofd >= 3) && (ofd != fileno(thread_stdin)) && (ofd != fileno(thread_stdout)) && (ofd != fileno(thread_stderr)))
+		if (ofd >= 3)
 #endif
 		close(ofd);
 		if (err)
