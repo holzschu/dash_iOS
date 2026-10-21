@@ -91,7 +91,6 @@ pipeline_waitpid(int pid)
 	pthread_cleanup_pop(0);
 }
 #define ios_waitpid pipeline_waitpid
->>>>>>> bf4005591d73d795f1495a0e8bf7b06f44028852
 #endif
 
 
