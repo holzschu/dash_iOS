@@ -130,6 +130,7 @@ INCLUDE "var.h"
 #if !TARGET_OS_IPHONE
 MKINIT char **environ;
 #endif
+INCLUDE "ios_error.h"
 INIT {
 	char **envp;
 	static char ppid[32] = "PPID=";
@@ -141,7 +142,9 @@ INIT {
 	char** environ = environmentVariables(ios_currentPid());
 #endif
 	initvar();
-	for (envp = environ ; *envp ; envp++) {
+	/* the per-command environment of ios_system, not the process-global environ */
+	envp = environmentVariables(ios_currentPid());
+	for (; envp && *envp ; envp++) {
 		p = endofname(*envp);
 		if (p != *envp && *p == '=') {
 			setvareq(*envp, VEXPORT|VTEXTFIXED);

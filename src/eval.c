@@ -70,6 +70,28 @@
 #define EV_NOFORK 4 /* don't wait after starting a command -- required for pipes */
 #include <fcntl.h>
 extern void	setpwd(const char *, int);
+#define EXPIPE 5 /* End only the inline producer after its pipe loses the reader. */
+static FILE *pipeline_stdout;
+
+static void
+wait_cancelled_command(void *argument)
+{
+	int previous;
+	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &previous);
+	ios_waitpid(*(int *)argument);
+	pthread_setcancelstate(previous, NULL);
+}
+
+static void
+pipeline_waitpid(int pid)
+{
+	// A cancelled shell must join its child before closing borrowed pipe streams.
+	pthread_cleanup_push(wait_cancelled_command, &pid);
+	ios_waitpid(pid);
+	pthread_cleanup_pop(0);
+}
+#define ios_waitpid pipeline_waitpid
+>>>>>>> bf4005591d73d795f1495a0e8bf7b06f44028852
 #endif
 
 
@@ -214,6 +236,14 @@ evaltree(union node *n, int flags)
 	unsigned isor;
 	int status = 0;
 
+	// Native iOS commands are pthreads; builtin-only loops have no blocking syscall.
+#if TARGET_OS_IPHONE
+	pthread_testcancel();
+	if (pipeline_stdout && ferror(pipeline_stdout)) {
+		exitstatus = 128 + SIGPIPE;
+		exraise(EXPIPE);
+	}
+#endif
 	setstackmark(&smark);
 
 	if (n == NULL) {
@@ -485,6 +515,45 @@ evalsubshell(union node *n, int flags)
 		lineno -= funcline - 1;
 
 	expredir(n->nredir.redirect);
+#if TARGET_OS_IPHONE
+	/* Inline iOS subshells need a local exit and redirection boundary. */
+	struct jmploc jmploc;
+	struct jmploc *savehandler = handler;
+	struct stackmark smark;
+	struct parsefile *file_stop = parsefile;
+	struct localvar_list *localvar_stop = pushlocalvars(0);
+	struct redirtab *redir_stop = pushredir(n->nredir.redirect);
+	int savesavestatus = savestatus;
+	int saveevalskip = evalskip;
+	int saveloopnest = loopnest;
+	int saveint;
+	int e;
+
+	SAVEINT(saveint);
+	setstackmark(&smark);
+	if ((e = setjmp(jmploc.loc))) {
+		status = exception == EXEXIT && savestatus >= 0 ? savestatus : exitstatus;
+	} else {
+		handler = &jmploc;
+		loopnest = 0;
+		status = redirectsafe(n->nredir.redirect, REDIR_PUSH);
+		if (!status)
+			status = evaltree(n->nredir.n, flags & EV_TESTED);
+	}
+	INTOFF;
+	unwindredir(redir_stop);
+	unwindfiles(file_stop);
+	unwindlocalvars(localvar_stop);
+	popstackmark(&smark);
+	savestatus = savesavestatus;
+	evalskip = saveevalskip;
+	loopnest = saveloopnest;
+	handler = savehandler;
+	RESTOREINT(saveint);
+	if (e && exception != EXEXIT && exception != EXEND)
+		longjmp(handler->loc, 1);
+	return status;
+#else
 	INTOFF;
 	// iOS: experimental, try without fork here:
 	if ((!backgnd && flags & EV_EXIT && !have_traps()) || TARGET_OS_IPHONE) {
@@ -512,9 +581,90 @@ nofork:
 		status = waitforjob(jp);
 	INTON;
 	return status;
+#endif
 }
 
 
+
+#if TARGET_OS_IPHONE
+
+struct pipeline_producer {
+	FILE *input, *output, *error;
+	FILE *previous_output;
+	struct nodelist **commands;
+};
+
+static void
+finish_pipeline_producer(void *argument)
+{
+	struct pipeline_producer *producer = argument;
+	pipeline_stdout = producer->previous_output;
+	if (producer->output) {
+		fflush(thread_stdout);
+		fclose(thread_stdout);
+		thread_stdout = producer->output;
+	}
+	if (producer->input)
+		thread_stdin = producer->input;
+	if (producer->error)
+		thread_stderr = producer->error;
+	free(producer->commands);
+}
+
+static void
+eval_pipeline_producer(struct nodelist **commands, int flags)
+{
+	struct pipeline_producer producer = { .commands = commands, .previous_output = pipeline_stdout };
+	struct jmploc frame;
+	struct jmploc *saved_handler = handler;
+	struct stackmark smark;
+	struct parsefile *file_stop = parsefile;
+	struct localvar_list *localvar_stop = pushlocalvars(0);
+	struct redirtab *redir_stop = pushredir(NULL);
+	int saveevalskip = evalskip;
+	int saveloopnest = loopnest;
+	struct cmdentry entry;
+	union node *command = commands[0]->n;
+	int owned = 0;
+	int saveint;
+	int raised;
+	/* Let ios_system own a simple external producer's pending pipe. Activating
+	 * it here would borrow it to the child and postpone EOF until after the
+	 * synchronous WebAssembly queue has already started the consumer.
+	 */
+	if (command->type == NCMD && command->ncmd.args &&
+	    goodname(command->ncmd.args->narg.text)) {
+		find_command(command->ncmd.args->narg.text, &entry, 0, pathval());
+		owned = entry.cmdtype == CMDNORMAL;
+	}
+	// Keep the producer's streams active across the entire syntax tree, rather
+	// than letting its first builtin consume and close the pending redirect.
+	if (!owned)
+		ios_activateChildStreams(&producer.input, &producer.output, &producer.error);
+	pipeline_stdout = producer.output ? thread_stdout : NULL;
+	SAVEINT(saveint);
+	setstackmark(&smark);
+	pthread_cleanup_push(finish_pipeline_producer, &producer);
+	raised = setjmp(frame.loc);
+	if (!raised) {
+		handler = &frame;
+		evaltree(commands[0]->n, flags & ~EV_NOFORK);
+	}
+	handler = saved_handler;
+	INTOFF;
+	unwindredir(redir_stop);
+	unwindfiles(file_stop);
+	unwindlocalvars(localvar_stop);
+	popstackmark(&smark);
+	evalskip = saveevalskip;
+	loopnest = saveloopnest;
+	RESTOREINT(saveint);
+	// Publish EOF on success, command-not-found, shell exceptions and cancellation.
+	pthread_cleanup_pop(1);
+	if (raised && exception != EXPIPE)
+		longjmp(saved_handler->loc, raised);
+}
+#endif
 
 /*
  * Compute the names of the files in a redirection list.
@@ -641,9 +791,7 @@ evalpipe(union node *n, int flags)
 		// Create stdout for the next command:
 		ios_dup2(pip[1], STDOUT_FILENO);
 	}
-	// j == 0, special case (no need to call dup2):
-	ios_IsMainThread(1);
-	evaltree(lplist[0]->n, flags | EV_NOFORK); // start the first command and wait for it to finish
+	eval_pipeline_producer(lplist, flags);
 	// Now wait for the last command at the end of the pipe to finish:
 	ios_waitpid(pid); 
 	// restore "interactive" status
@@ -652,7 +800,6 @@ evalpipe(union node *n, int flags)
 	else
 		ios_stopInteractive(); 
 	status = ios_getCommandStatus();
-	free(lplist);
 #endif
 	return status;
 }
@@ -1081,6 +1228,9 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 	else {
 #if TARGET_OS_IPHONE
 		FILE *old_stdin, *old_stdout, *old_stderr;
+		FILE *borrowed_stdin = thread_stdin;
+		FILE *borrowed_stdout = thread_stdout;
+		FILE *borrowed_stderr = thread_stderr;
 		old_stdin = NULL; 
 		old_stdout = NULL; 
 		old_stderr = NULL; 
@@ -1093,10 +1243,11 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 			thread_stdin = old_stdin;
 		}
 		if (old_stderr != NULL) {
-			fflush(thread_stderr);
-			if (thread_stderr != thread_stdout) {
+			if (thread_stderr != thread_stdout && thread_stderr != borrowed_stdin &&
+					thread_stderr != borrowed_stdout && thread_stderr != borrowed_stderr) {
 				// Avoid closing ourselves (it can happen)
 				if (fileno(old_stderr) != fileno(thread_stderr)) {
+					fflush(thread_stderr); 
 					fclose(thread_stderr); 
 				}
 			}
@@ -1104,10 +1255,12 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 		}
 		if (old_stdout != NULL) {
 			fflush(thread_stdout);
-			// Avoid closing ourselves (it can happen)
-			if (fileno(thread_stdout) != fileno(old_stdout)) {
-				fclose(thread_stdout);
-			}
+			if (thread_stdout != borrowed_stdin && thread_stdout != borrowed_stdout &&
+					thread_stdout != borrowed_stderr)
+				// Avoid closing ourselves (it can happen)
+				if (fileno(thread_stdout) != fileno(old_stdout)) {
+					fclose(thread_stdout);
+				}
 			thread_stdout = old_stdout;
 		}
 #endif
