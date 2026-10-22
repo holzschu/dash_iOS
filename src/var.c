@@ -142,8 +142,9 @@ INIT {
 	char** environ = environmentVariables(ios_currentPid());
 #endif
 	initvar();
-	/* Import the command environment, including the pane prompt. */
-	for (envp = environ; envp && *envp; envp++) {
+	/* the per-command environment of ios_system, not the process-global environ */
+	envp = environmentVariables(ios_currentPid());
+	for (; envp && *envp ; envp++) {
 		p = endofname(*envp);
 		if (p != *envp && *p == '=') {
 			setvareq(*envp, VEXPORT|VTEXTFIXED);
