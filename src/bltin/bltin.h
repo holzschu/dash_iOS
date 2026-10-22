@@ -44,38 +44,38 @@
 #include "../mystring.h"
 #include "../options.h"
 #ifdef SHELL
-#include "../memalloc.h"
-#include "../output.h"
-#include "../error.h"
-#ifndef USE_GLIBC_STDIO
-#undef stdout
-#undef stderr
-#undef putc
-#undef putchar
-#undef fileno
-#define stdout out1
-#define stderr out2
-#define printf out1fmt
-#define putc(c, file)	outc(c, file)
-#define putchar(c)	out1c(c)
-#define FILE struct output
-#define fprintf outfmt
-#define fputs outstr
-#define fflush flushout
-#define fileno(f) ((f)->fd)
-#define ferror outerr
-#endif
-#define INITARGS(argv)
-#define	error sh_error
-#define	warn sh_warn
-#define	warnx sh_warnx
-#define exit sh_exit
-#define setprogname(s)
-#define getprogname() commandname
-#define setlocate(l,s) 0
-
-#define getenv(p) bltinlookup((p),0)
-
+  #include "../memalloc.h"
+  #include "../output.h"
+  #include "../error.h"
+  #ifndef USE_GLIBC_STDIO
+    #undef stdout
+    #undef stderr
+    #undef putc
+    #undef putchar
+    #undef fileno
+    #define stdout out1
+    #define stderr out2
+    #define printf out1fmt
+    #define putc(c, file)	outc(c, file)
+    #define putchar(c)	out1c(c)
+    #define FILE struct output
+    #define fprintf outfmt
+    #define fputs outstr
+    #define fflush flushout
+    #define fileno(f) ((f)->fd)
+    #define ferror outerr
+  #endif
+  #define INITARGS(argv)
+  #define	error sh_error
+  #define	warn sh_warn
+  #define	warnx sh_warnx
+  #define exit sh_exit
+  #define setprogname(s)
+  #define getprogname() commandname
+  #define setlocate(l,s) 0
+  
+  #define getenv(p) bltinlookup((p),0)
+  
 #else
 #undef NULL
 #include <stdio.h>

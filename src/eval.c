@@ -69,6 +69,8 @@
 #include "ios_error.h"
 #include <dlfcn.h>
 #define EV_NOFORK 4 /* don't wait after starting a command -- required for pipes */
+#include <fcntl.h>
+extern void	setpwd(const char *, int);
 #define EXPIPE 5 /* End only the inline producer after its pipe loses the reader. */
 static FILE *pipeline_stdout;
 
@@ -302,14 +304,14 @@ socket_foreground_pid(int pid)
 }
 
 static void
-socket_exec_command(char **argv)
+socket_exec_command(char **argv, char **envp)
 {
 	int pid = ios_fork();
 	const char *name = strrchr(argv[0], '/');
 	int previous;
 	name = name ? name + 1 : argv[0];
 	previous = socket_foreground_pid(!strcmp(name, "dash") || !strcmp(name, "sh") ? -pid : pid);
-	ios_execve(argv[0], argv, environment());
+	ios_execve(argv[0], argv, envp);
 	ios_waitpid(pid);
 	socket_foreground_pid(previous);
 }
@@ -455,7 +457,6 @@ exexit:
 	}
 
 	popstackmark(&smark);
-
 	return exitstatus;
 }
 
@@ -722,11 +723,24 @@ eval_pipeline_producer(struct nodelist **commands, int flags)
 	struct redirtab *redir_stop = pushredir(NULL);
 	int saveevalskip = evalskip;
 	int saveloopnest = loopnest;
+	struct cmdentry entry;
+	union node *command = commands[0]->n;
+	int owned = 0;
 	int saveint;
 	int raised;
+	/* Let ios_system own a simple external producer's pending pipe. Activating
+	 * it here would borrow it to the child and postpone EOF until after the
+	 * synchronous WebAssembly queue has already started the consumer.
+	 */
+	if (command->type == NCMD && command->ncmd.args &&
+	    goodname(command->ncmd.args->narg.text)) {
+		find_command(command->ncmd.args->narg.text, &entry, 0, pathval());
+		owned = entry.cmdtype == CMDNORMAL;
+	}
 	// Keep the producer's streams active across the entire syntax tree, rather
 	// than letting its first builtin consume and close the pending redirect.
-	ios_activateChildStreams(&producer.input, &producer.output, &producer.error);
+	if (!owned)
+		ios_activateChildStreams(&producer.input, &producer.output, &producer.error);
 	pipeline_stdout = producer.output ? thread_stdout : NULL;
 	SAVEINT(saveint);
 	setstackmark(&smark);
@@ -792,6 +806,9 @@ expredir(union node *n)
  * of the shell, which make the last process in a pipeline the parent
  * of all the rest.)
  */
+#if TARGET_OS_IPHONE
+extern void ios_IsMainThread(int value);
+#endif
 
 STATIC int
 evalpipe(union node *n, int flags)
@@ -859,6 +876,10 @@ evalpipe(union node *n, int flags)
 	flags &= ~EV_EXIT; // do not exit after each command
 	// Try: call all commands, but wait for last one in the pipe. 
 	// Question is: how? make evaltree return pid, wait for all pid? 
+	// TODO (may 2023): This creates issues when a command is piped into a subshell. 
+	// Keep the stream ordering, start commands in order, wait for the last one to end.
+	ios_IsMainThread(0);
+	int interactiveStatusBefore = ios_storeInteractive(); // store interactive status.
 	int pid = ios_fork();
 	int previous = socket_foreground_pid(pid);
 	for (int j = pipelen - 1; j >= 1; j--) {
@@ -875,7 +896,10 @@ evalpipe(union node *n, int flags)
 	// Now wait for the last command at the end of the pipe to finish:
 	ios_waitpid(pid); 
 	socket_foreground_pid(previous);
-	ios_stopInteractive(); 
+	if (interactiveStatusBefore)
+		ios_startInteractive();
+	else
+		ios_stopInteractive();
 	status = ios_getCommandStatus();
 #endif
 	return status;
@@ -925,6 +949,7 @@ evalbackcmd(union node *n, struct backcmd *result)
 	thread_stdout = fdopen(pip[1], "w");
 	ifsfree();
 	evaltree(n, 0);
+	fclose(thread_stdout); // otherwise we leak one file descriptor
 	thread_stdout = old_stdout;
 #endif
 	result->fd = pip[0];
@@ -1024,6 +1049,9 @@ evalcommand(union node *cmd, int flags)
 	char **nargv;
 	int vflags;
 	int vlocal;
+#if TARGET_OS_IPHONE
+	char* argv_0;
+#endif
 
 	errlinno = lineno = cmd->ncmd.linno;
 	if (funcline)
@@ -1055,6 +1083,7 @@ evalcommand(union node *cmd, int flags)
 		int pseudovarflag = 0;
 
 		for (;;) {
+			
 			find_command(arglist.list->text, &cmdentry,
 				     cmd_flag | DO_REGBLTIN, pathval());
 
@@ -1113,6 +1142,7 @@ evalcommand(union node *cmd, int flags)
 	preverrout.fd = 2;
 #if TARGET_OS_IPHONE
 	preverrout.stream = thread_stdout;
+	argv_0 = NULL;
 #endif
 	expredir(cmd->ncmd.redirect);
 	redir_stop = pushredir(cmd->ncmd.redirect);
@@ -1139,6 +1169,7 @@ bail:
 			mklocal((*spp)->text, VEXPORT);
 		else
 			setvareq((*spp)->text, vflags);
+		
 	}
 
 	/* Print the command if xflag is set. */
@@ -1162,6 +1193,26 @@ bail:
 	    !(cmdentry.u.cmd->flags & BUILTIN_REGULAR)) {
 		path = unlikely(path) ? path : pathval();
 		find_command(argv[0], &cmdentry, cmd_flag | DO_ERR, path);
+
+#if TARGET_OS_IPHONE
+		// iOS addition to get command.wasm3 commands:
+		if (cmdentry.cmdtype == CMDUNKNOWN) {
+			char* newName = malloc(strlen(argv[0]) + strlen(".wasm3") + 1);
+			sprintf(newName, "%s.wasm3", argv[0]);
+			find_command(newName, &cmdentry, cmd_flag | DO_ERR, path);
+			if (cmdentry.cmdtype == CMDNORMAL) {
+				// I can't delete argv[0] yet (causes a crash)
+				// but I need to delete newName.
+				argv_0 = argv[0];
+				argv[0] = newName;
+			} else {
+				free(newName);
+				sh_warnx("%s: %s", argv[0], errmsg(ENOENT, E_EXEC));
+			}
+		}
+		if (cmdentry.cmdtype == CMDERROR) 
+			cmdentry.cmdtype = CMDUNKNOWN;
+#endif
 	}
 
 	jp = NULL;
@@ -1178,15 +1229,33 @@ bail:
 	default:
 #if TARGET_OS_IPHONE
 		if (!(flags & EV_NOFORK)) {
-			socket_exec_command(argv);
+			int interactiveStatusBefore = ios_storeInteractive();
+			int stdinFlagsBefore = fcntl(fileno(thread_stdin), F_GETFL);
+			char **localEnvironment = listvars(0, 0, NULL);
+			socket_exec_command(argv, localEnvironment);
 			// store the result of executing the command:
 			exitstatus = ios_getCommandStatus(); 
 			// if the user started an interactive command (Vim), tell ios_system to handle key events again:
-			ios_stopInteractive(); 
+			if (interactiveStatusBefore)
+				ios_startInteractive(); 
+			else
+				ios_stopInteractive(); 
+			// free the list allocated by listvars 
+			stunalloc(localEnvironment);
+			// reset stdin to non-blocking:
+			fcntl(fileno(thread_stdin), F_SETFL, stdinFlagsBefore);
+			// set PWD to the proper value (but don't set OLDPWD)
+			setpwd(NULL, 0);
 			break;
 		} else {
-			ios_execve(argv[0], argv, environment());
+			// Without fork the command shares the current environment.
+			ios_execv(argv[0], argv);
 			break;
+		}
+		if (argv_0 != NULL) {
+			// restore the old value of argv[0] so cleanup works:
+			free(argv[0]);
+			argv[0] = argv_0;
 		}
 #else 		
 		/* Fork off a child process if necessary. */
@@ -1272,17 +1341,23 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 		}
 		if (old_stderr != NULL) {
 			if (thread_stderr != thread_stdout && thread_stderr != borrowed_stdin &&
-			    thread_stderr != borrowed_stdout && thread_stderr != borrowed_stderr) {
-				fflush(thread_stderr); 
-				fclose(thread_stderr); 
+					thread_stderr != borrowed_stdout && thread_stderr != borrowed_stderr) {
+				// Avoid closing ourselves (it can happen)
+				if (fileno(old_stderr) != fileno(thread_stderr)) {
+					fflush(thread_stderr); 
+					fclose(thread_stderr); 
+				}
 			}
 			thread_stderr = old_stderr;
 		}
 		if (old_stdout != NULL) {
 			fflush(thread_stdout);
 			if (thread_stdout != borrowed_stdin && thread_stdout != borrowed_stdout &&
-			    thread_stdout != borrowed_stderr)
-				fclose(thread_stdout);
+					thread_stdout != borrowed_stderr)
+				// Avoid closing ourselves (it can happen)
+				if (fileno(thread_stdout) != fileno(old_stdout)) {
+					fclose(thread_stdout);
+				}
 			thread_stdout = old_stdout;
 		}
 #endif
@@ -1460,8 +1535,12 @@ execcmd(int argc, char **argv)
 		mflag = 0;
 		optschanged();
 #if TARGET_OS_IPHONE
-		socket_exec_command(argv + 1);
-		ios_stopInteractive(); 
+		int interactiveStatusBefore = ios_storeInteractive();
+		socket_exec_command(argv + 1, environment());
+		if (interactiveStatusBefore)
+			ios_startInteractive();
+		else
+			ios_stopInteractive();
 #else 		
 		shellexec(argv + 1, pathval(), 0);
 #endif

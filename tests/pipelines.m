@@ -2,6 +2,8 @@
 #import <Foundation/Foundation.h>
 #import <ios_system/ios_system.h>
 #include <dlfcn.h>
+#include <pthread.h>
+#include <stdbool.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <limits.h>
@@ -22,6 +24,63 @@ int pipeline_first_main(int argc, char **argv) {
     return status;
 }
 
+// Stand-in for a-Shell's synchronous WebAssembly queue: each `wasm` command is stacked and
+// blocks until the caller's wait runs the stack, producer first. The first argument
+// picks the behaviour: emit writes a block, fail writes nothing, drain counts its input and
+// skip ignores it. A skipping consumer runs before the producer, which then meets a closed pipe.
+static struct {
+    FILE *input, *output;
+    dispatch_semaphore_t done;
+    char kind;
+} queued[2];
+static int queuedCount;
+static pthread_mutex_t queueLock = PTHREAD_MUTEX_INITIALIZER;
+#define WASM_BYTES 4096
+
+int pipeline_wasm_main(int argc, char **argv) {
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    pthread_mutex_lock(&queueLock);
+    int slot = queuedCount++;
+    queued[slot].input = thread_stdin;
+    queued[slot].output = thread_stdout;
+    queued[slot].done = done;
+    queued[slot].kind = argc > 1 ? argv[1][0] : 0;
+    pthread_mutex_unlock(&queueLock);
+    finishedPreparingWebAssemblyCommand();
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    return 0;
+}
+
+static void runQueued(int slot) {
+    char block[WASM_BYTES];
+    size_t total = 0, got;
+    switch (queued[slot].kind) {
+    case 'e':
+        memset(block, 'x', sizeof(block));
+        fwrite(block, 1, sizeof(block), queued[slot].output);
+        fflush(queued[slot].output);
+        break;
+    case 'd':
+        while ((got = fread(block, 1, sizeof(block), queued[slot].input)) > 0) total += got;
+        fprintf(queued[slot].output, "%zu\n", total);
+        fflush(queued[slot].output);
+        break;
+    }
+    dispatch_semaphore_signal(queued[slot].done);
+}
+
+void executeWebAssemblyCommands(void) {
+    if (queuedCount != 2) return;
+    // Dash starts the consumer first, so find the producer by what it does.
+    int producer = queued[0].kind == 'e' || queued[0].kind == 'f' ? 0 : 1;
+    int consumer = 1 - producer;
+    bool consumerSkips = queued[consumer].kind == 's';
+    runQueued(consumerSkips ? consumer : producer);
+    if (consumerSkips) usleep(200000);
+    runQueued(consumerSkips ? producer : consumer);
+    queuedCount = 0;
+}
+
 static void timedOut(int signal) {
     const char message[] = "pipeline regression timed out\n";
     write(STDERR_FILENO, message, sizeof(message) - 1);
@@ -32,6 +91,7 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         if (argc != 3) return 2;
         signal(SIGALRM, timedOut);
+        signal(SIGPIPE, SIG_IGN);
         alarm(5);
         void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
         if (!library || !(shellMain = dlsym(library, "main"))) {
@@ -56,6 +116,15 @@ int main(int argc, char **argv) {
             script = "(exit 7)";
             expected = "";
             expectedStatus = 7;
+        } else if (!strcmp(argv[2], "wasm-producer-eof")) {
+            script = "wasm emit | wasm drain";
+            expected = "4096\n";
+        } else if (!strcmp(argv[2], "wasm-producer-fails")) {
+            script = "wasm fail | wasm drain; printf 'next\\n'";
+            expected = "0\nnext\n";
+        } else if (!strcmp(argv[2], "wasm-consumer-skips")) {
+            script = "wasm emit | wasm skip; printf 'next\\n'";
+            expected = "next\n";
         } else return 2;
         initializeEnvironment();
         ios_switchSession("pipeline-regression");
@@ -67,6 +136,9 @@ int main(int argc, char **argv) {
         snprintf(markerPath, sizeof(markerPath), "%s/first-line", markerDirectory);
         FILE *marker = fopen(markerPath, "w");
         if (!marker || fclose(marker) || chmod(markerPath, 0755)) return 2;
+        snprintf(markerPath, sizeof(markerPath), "%s/wasm", markerDirectory);
+        marker = fopen(markerPath, "w");
+        if (!marker || fclose(marker) || chmod(markerPath, 0755)) return 2;
         ios_setenv("PATH", markerDirectory, 1);
         FILE *input = tmpfile(), *output = tmpfile(), *error = tmpfile();
         if (!input || !output || !error) return 2;
@@ -75,6 +147,7 @@ int main(int argc, char **argv) {
         ios_setStreams(input, output, error);
         replaceCommand(@"dash", @"pipeline_shell_main", false);
         replaceCommand(@"first-line", @"pipeline_first_main", false);
+        replaceCommand(@"wasm", @"pipeline_wasm_main", false);
         // Quote embedded apostrophes for the outer ios_system command parser.
         NSString *quoted = [[NSString stringWithUTF8String:script] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
         NSString *command = [NSString stringWithFormat:@"dash -c '%@'", quoted];

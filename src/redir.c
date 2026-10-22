@@ -77,10 +77,14 @@ struct redirtab {
 };
 
 
-MKINIT struct redirtab *redirlist;
+MKINIT __thread struct redirtab *redirlist;
 
 /* Bit map of currently closed file descriptors. */
+#if !TARGET_OS_IPHONE
 static unsigned closed_redirs;
+#else
+static __thread unsigned closed_redirs = 0;
+#endif
 
 STATIC int openredirect(union node *);
 #ifdef notyet
@@ -280,6 +284,11 @@ dupredirect(redir, f)
 	if (redir->nfile.type == NTOFD || redir->nfile.type == NFROMFD) {
 		/* if not ">&-" */
 		if (f >= 0) {
+#if TARGET_OS_IPHONE
+			if (f == 0) f = fileno(thread_stdin);
+			else if (f == 1) f = fileno(thread_stdout);
+			else if (f == 2) f = fileno(thread_stderr);
+#endif
 #ifdef notyet
 			if (memory[f])
 				memory[fd] = 1;
@@ -295,9 +304,11 @@ dupredirect(redir, f)
 	} else if (dup2(f, fd) < 0)
 		err = errno;
 
-#if !TARGET_OS_IPHONE
-	close(f);
+#if TARGET_OS_IPHONE
+	// We try to close as many fd as possible, but make sure "pkg" works
+	if (fd >= 3)  // don't close stdin/stdout/stderr
 #endif
+	close(f);
 	if (err < 0)
 		goto err;
 
@@ -377,19 +388,16 @@ popredir(int drop)
 
 		switch (rp->renamed[i]) {
 		case CLOSED:
-#if !TARGET_OS_IPHONE
-			// Don't close file descriptors, cleanup_function does it already.
 			if (!closed)
 				close(i);
-#endif
 			break;
 		default:
 #if !TARGET_OS_IPHONE
-			// And dup2 is going to create issues too.
+			// This doesn't have an effect on iOS, and it breaks the next command if builtin (ls > 1; echo Hello)
 			if (!drop)
 				dup2(rp->renamed[i], i);
-			close(rp->renamed[i]);
 #endif
+			close(rp->renamed[i]);
 			break;
 		}
 	}
@@ -419,13 +427,20 @@ FORKRESET {
 
 #endif
 
-
+#if TARGET_OS_IPHONE
+// Include file for getrlimit/setrlimit:
+#include <sys/resource.h>
+#endif
 
 /*
  * Move a file descriptor to > 10.  Invokes sh_error on error unless
  * the original file dscriptor is not open.
  */
 // iOS: savefd (and specifically the call to fcntl(from, F_DUPFD, 10); is the reason for the crash on iOS.
+// iOS 16.3: fcntl(from, F_DUPFD, 10) works now???
+// iOS 26.3: fcntl(from, F_DUPFD, 10) is crashing again.
+// savefd is crashing because from (here, 3) is guarded (EXC_GUARD). But that is very challenging to change.
+//
 
 int
 savefd(int from, int ofd)
@@ -434,10 +449,32 @@ savefd(int from, int ofd)
 	int err;
 
 	newfd = fcntl(from, F_DUPFD, 10);
+
+ /* In case it breaks again, here is a replacement for F_DUPFD: */
+	/* newfd = -1;
+	struct rlimit limitFilesOpen;
+    // Store the maximum number of file descriptors allowed:
+    getrlimit(RLIMIT_NOFILE, &limitFilesOpen);
+	for (int tmpfd = 10; tmpfd < limitFilesOpen.rlim_cur; tmpfd++) {
+		errno = 0;
+		int flags = fcntl(tmpfd, F_GETFD, 0);
+		if ((flags == -1) && errno) {
+			// first file descriptor not open:
+			newfd = tmpfd;
+			break;
+		}
+	}
+	if (newfd > 0) {
+		// iOS 26: this line crashes whether I use fcntl or dup2.
+		// fcntl(from, F_DUPFD, newfd);
+		dup2(from, newfd);
+	}
+*/
 	err = newfd < 0 ? errno : 0;
 	if (err != EBADF) {
 #if TARGET_OS_IPHONE
-		if ((ofd >= 3) && (ofd != fileno(thread_stdin)) && (ofd != fileno(thread_stdout)) && (ofd != fileno(thread_stderr)))
+		// if ((ofd >= 3) && (ofd != fileno(thread_stdin)) && (ofd != fileno(thread_stdout)) && (ofd != fileno(thread_stderr)))
+		if (ofd >= 3)
 #endif
 		close(ofd);
 		if (err)
