@@ -311,7 +311,10 @@ socket_exec_command(char **argv, char **envp)
 	int previous;
 	name = name ? name + 1 : argv[0];
 	previous = socket_foreground_pid(!strcmp(name, "dash") || !strcmp(name, "sh") ? -pid : pid);
-	ios_execve(argv[0], argv, envp);
+	if (envp)
+		ios_execve(argv[0], argv, envp);
+	else
+		ios_execv(argv[0], argv);
 	ios_waitpid(pid);
 	socket_foreground_pid(previous);
 }
@@ -896,10 +899,11 @@ evalpipe(union node *n, int flags)
 	// Now wait for the last command at the end of the pipe to finish:
 	ios_waitpid(pid); 
 	socket_foreground_pid(previous);
-	if (interactiveStatusBefore)
-		ios_startInteractive();
+	// restore "interactive" status
+	if (interactiveStatusBefore) 
+		ios_startInteractive(); 
 	else
-		ios_stopInteractive();
+		ios_stopInteractive(); 
 	status = ios_getCommandStatus();
 #endif
 	return status;
@@ -1229,9 +1233,11 @@ bail:
 	default:
 #if TARGET_OS_IPHONE
 		if (!(flags & EV_NOFORK)) {
-			int interactiveStatusBefore = ios_storeInteractive();
+			int interactiveStatusBefore = ios_storeInteractive(); 
 			int stdinFlagsBefore = fcntl(fileno(thread_stdin), F_GETFL);
-			char **localEnvironment = listvars(0, 0, NULL);
+			char** localEnvironment = listvars(0,0,NULL);
+			// pass the env variables to exec (including local vars)
+			// this is so "var=name ./scriptname" works
 			socket_exec_command(argv, localEnvironment);
 			// store the result of executing the command:
 			exitstatus = ios_getCommandStatus(); 
@@ -1248,7 +1254,7 @@ bail:
 			setpwd(NULL, 0);
 			break;
 		} else {
-			// Without fork the command shares the current environment.
+			// no execve here because without fork we share the same environment
 			ios_execv(argv[0], argv);
 			break;
 		}
@@ -1536,11 +1542,11 @@ execcmd(int argc, char **argv)
 		optschanged();
 #if TARGET_OS_IPHONE
 		int interactiveStatusBefore = ios_storeInteractive();
-		socket_exec_command(argv + 1, environment());
-		if (interactiveStatusBefore)
-			ios_startInteractive();
+		socket_exec_command(argv + 1, NULL);
+		if (interactiveStatusBefore) 
+			ios_startInteractive(); 
 		else
-			ios_stopInteractive();
+			ios_stopInteractive(); 
 #else 		
 		shellexec(argv + 1, pathval(), 0);
 #endif
