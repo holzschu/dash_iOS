@@ -131,14 +131,6 @@ procargs(int argc, char **argv)
 	xargv = argv;
 	login = xargv[0] && xargv[0][0] == '-';
 #if TARGET_OS_IPHONE
-	// We need to know if dash is a login shell (it's the first dash to be launched)
-	// or a non-login shell (dash started from dash). As environment variables are carried 
-	// over from process to child process, this seems the easiest method.
-	if (!getenv("_DASH_LOGIN_SHELL")) {
-		login = 1;
-		setenv("_DASH_LOGIN_SHELL", "1", 1);
-		setvar("_DASH_LOGIN_SHELL", "1", VEXPORT);
-	}
 	minusc = NULL;
 #endif
 	arg0 = xargv[0];
@@ -162,6 +154,14 @@ procargs(int argc, char **argv)
 	for (i = 0; i < NOPTS; i++)
 		if (optlist[i] == 2)
 			optlist[i] = 0;
+#if TARGET_OS_IPHONE
+	/* Only the first interactive shell implicitly reads the login profile. */
+	if (!getenv("_DASH_LOGIN_SHELL") && (iflag || login)) {
+		login = 1;
+		setenv("_DASH_LOGIN_SHELL", "1", 1);
+		setvar("_DASH_LOGIN_SHELL", "1", VEXPORT);
+	}
+#endif
 #if DEBUG == 2
 	debug = 1;
 #endif

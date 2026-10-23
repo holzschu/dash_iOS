@@ -16,6 +16,8 @@ int main(void) {
             ![files createFileAtPath:[bin stringByAppendingPathComponent:@"dash"] contents:NSData.data attributes:nil]) return 2;
         NSString *profile = @"printf 'PROFILE\\n' >> \"$HOME/profile-count\"\ndash -c 'printf CHILD_OK'\n";
         if (![profile writeToFile:[documents stringByAppendingPathComponent:@".profile"] atomically:YES encoding:NSUTF8StringEncoding error:NULL]) return 2;
+        NSString *script = [home stringByAppendingPathComponent:@"command.sh"];
+        if (![@"printf SCRIPT_OK" writeToFile:script atomically:YES encoding:NSUTF8StringEncoding error:NULL]) return 2;
         initializeEnvironment();
         ios_switchSession("login-profile");
         ios_setenv("HOME", home.fileSystemRepresentation, 1);
@@ -28,10 +30,20 @@ int main(void) {
         if (ios_system("alias sh dash")) return 2;
         joinMainThread = false;
         BOOL passed = YES;
+        NSArray<NSString *> *nonlogin = @[@"dash -c 'printf COMMAND_OK'", [@"dash " stringByAppendingString:script]];
+        for (NSString *command in nonlogin) {
+            pid_t child = ios_fork();
+            int status = ios_system(command.UTF8String);
+            ios_waitpid(child);
+            ashell_wait_owned_streams(owner);
+            fflush(error);
+            if (status || ios_getCommandStatus() || ftell(error)) passed = NO;
+        }
+        passed = passed && ![files fileExistsAtPath:[home stringByAppendingPathComponent:@"profile-count"]];
         int completed = 0;
         for (; completed < 8; ++completed) {
             pid_t child = ios_fork();
-            int status = ios_system("dash -c 'printf ROOT_OK'");
+            int status = ios_system(completed == 7 ? "dash -ic 'printf ROOT_OK'" : "dash -lc 'printf ROOT_OK'");
             ios_waitpid(child);
             ashell_wait_owned_streams(owner);
             fflush(error);
@@ -41,7 +53,7 @@ int main(void) {
         rewind(output);
         char actual[256] = {0};
         size_t count = fread(actual, 1, sizeof actual - 1, output);
-        NSString *expected = [@"CHILD_OKROOT_OK" stringByPaddingToLength:8 * 15 withString:@"CHILD_OKROOT_OK" startingAtIndex:0];
+        NSString *expected = [@"COMMAND_OKSCRIPT_OK" stringByAppendingString:[@"CHILD_OKROOT_OK" stringByPaddingToLength:8 * 15 withString:@"CHILD_OKROOT_OK" startingAtIndex:0]];
         NSString *visits = [NSString stringWithContentsOfFile:[home stringByAppendingPathComponent:@"profile-count"] encoding:NSUTF8StringEncoding error:NULL];
         NSString *expectedVisits = [@"PROFILE\n" stringByPaddingToLength:8 * 8 withString:@"PROFILE\n" startingAtIndex:0];
         passed = passed && count == strlen(expected.UTF8String) && !strcmp(actual, expected.UTF8String) && [visits isEqualToString:expectedVisits];
