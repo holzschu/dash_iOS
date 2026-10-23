@@ -35,6 +35,9 @@
  */
 
 /* values of cmdtype */
+#if TARGET_OS_IPHONE
+#define CMDERROR    -2  /* command was found but resulted in error */
+#endif
 #define CMDUNKNOWN	-1	/* no entry in table for command */
 #define CMDNORMAL	0	/* command is an executable program */
 #define CMDFUNCTION	1	/* command is a shell function */

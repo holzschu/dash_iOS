@@ -22,6 +22,7 @@
 #include "ios_error.h"
 #undef exit
 #undef getenv
+#include "var.h" // for bltinlookup()
 #endif
 #include "bltin.h"
 
@@ -530,6 +531,13 @@ static int has_exec_bit_set(const char *path)
 
 	if (stat64(path, &st))
 		return 0;
+#if TARGET_OS_IPHONE
+	// Files inside $APPDIR all have their exec bit set to 0 by Apple
+	// So we set them as executable to avoid issues.
+	char* appdir = bltinlookup("APPDIR");
+	if (strncmp(path, appdir, strlen(appdir)) == 0) 
+		return 1;
+#endif
 	return st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH);
 }
 

@@ -64,6 +64,8 @@ static char  **gargv;
 #include "bltin.h"
 #include "system.h"
 
+#define putchar(a) fputc(a, thread_stdout)
+
 #define PF(f, func) { \
 	switch ((char *)param - (char *)array) { \
 	default: \
