@@ -57,6 +57,7 @@
 #include "memalloc.h"
 #if TARGET_OS_IPHONE
 #include "ios_error.h"
+#include "trap.h"
 #include <dlfcn.h>
 #define isatty ios_isatty
 #undef _PATH_TMP
@@ -96,6 +97,8 @@ socket_getc(EditLine *line, wchar_t *ch)
 {
 	int count;
 	int (*wait_input)(FILE *);
+
+retry:
 	wait_input = dlsym(RTLD_DEFAULT, "ashell_pane_wait_editor_input");
 	while (wait_input) {
 		int ready = wait_input(thread_stdin);
@@ -114,6 +117,16 @@ socket_getc(EditLine *line, wchar_t *ch)
 	count = el_wgetc(line, ch);
 	if (el_wset(line, EL_GETCFN, socket_getc) != 0)
 		return -1;
+	if (count == 1 && *ch == L'\003') {
+		/* No tty driver delivers VINTR on a socket. Dispatch SIGINT on
+		 * this shell's editor thread, using its own trap/unwind machinery.
+		 * Process-global handlers can belong to another interpreter slot.
+		 */
+		el_reset(line);
+		onsig(SIGINT);
+		dotrap();
+		goto retry;
+	}
 	if (count == 1 && *ch == L'\r')
 		*ch = L'\n';
 	return count;
