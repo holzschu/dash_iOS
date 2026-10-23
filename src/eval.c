@@ -1245,8 +1245,8 @@ bail:
 		if (!(flags & EV_NOFORK)) {
 			int interactiveStatusBefore = ios_storeInteractive(); 
 			int stdinFlagsBefore = fcntl(fileno(thread_stdin), F_GETFL);
-			char** localEnvironment = environment();
-			// Pass exported variables and command-prefix assignments.
+			char** localEnvironment = listvars(0,0,NULL);
+			// Pass shell variables and command-prefix assignments.
 			socket_exec_command(argv, localEnvironment);
 			// store the result of executing the command:
 			exitstatus = ios_getCommandStatus(); 
@@ -1255,7 +1255,7 @@ bail:
 				ios_startInteractive(); 
 			else
 				ios_stopInteractive(); 
-			// Free the list allocated by environment()
+			// Free the list allocated by listvars
 			stunalloc(localEnvironment);
 			// reset stdin to non-blocking:
 			fcntl(fileno(thread_stdin), F_SETFL, stdinFlagsBefore);
@@ -1263,7 +1263,7 @@ bail:
 			setpwd(NULL, 0);
 			break;
 		} else {
-			char** localEnvironment = environment();
+			char** localEnvironment = listvars(0,0,NULL);
 			ios_execve(argv[0], argv, localEnvironment);
 			stunalloc(localEnvironment);
 			break;

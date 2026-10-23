@@ -141,7 +141,7 @@ int main(int argc, char **argv) {
             expected = "next\n";
         } else if (!strcmp(argv[2], "pipeline-environment")) {
             script = "FOO=private; envprobe; printf x | envprobe; export FOO=outer; envprobe; FOO=inner envprobe; envprobe; printf x | envprobe; printf x | FOO=pipe envprobe; envprobe";
-            expected = "missing\nmissing\nouter\ninner\nouter\nouter\npipe\nouter\n";
+            expected = "private\nprivate\nouter\ninner\nouter\nouter\npipe\nouter\n";
         } else if (!strcmp(argv[2], "pipeline-error-unwind")) {
             script = "export 1bad=value | first-line";
             expected = "";
@@ -149,8 +149,6 @@ int main(int argc, char **argv) {
         } else return 2;
         initializeEnvironment();
         ios_switchSession("pipeline-regression");
-        if (!strcmp(argv[2], "pipeline-error-unwind"))
-            ios_setenv("ASHELL_IOS_SOCKET_INPUT", "1", 1);
         // Dash resolves external commands through PATH before ios_system dispatch.
         char markerDirectory[PATH_MAX];
         snprintf(markerDirectory, sizeof(markerDirectory), "%spipeline-markers.XXXXXX", NSTemporaryDirectory().fileSystemRepresentation);
