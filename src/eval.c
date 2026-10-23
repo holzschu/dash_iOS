@@ -296,9 +296,7 @@ static int
 socket_foreground_pid(int pid)
 {
 	int (*exchange)(int);
-	const char *socket_input = getenv("ASHELL_IOS_SOCKET_INPUT");
-	if (!socket_input || strcmp(socket_input, "1"))
-		return 0;
+	/* The main terminal also needs the job PID to route Ctrl-C. */
 	exchange = dlsym(RTLD_DEFAULT, "ashell_pane_exchange_foreground_pid");
 	return exchange ? exchange(pid) : 0;
 }
