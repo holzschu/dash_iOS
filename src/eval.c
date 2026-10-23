@@ -1235,9 +1235,8 @@ bail:
 		if (!(flags & EV_NOFORK)) {
 			int interactiveStatusBefore = ios_storeInteractive(); 
 			int stdinFlagsBefore = fcntl(fileno(thread_stdin), F_GETFL);
-			char** localEnvironment = listvars(0,0,NULL);
-			// pass the env variables to exec (including local vars)
-			// this is so "var=name ./scriptname" works
+			char** localEnvironment = environment();
+			// Pass exported variables and command-prefix assignments.
 			socket_exec_command(argv, localEnvironment);
 			// store the result of executing the command:
 			exitstatus = ios_getCommandStatus(); 
