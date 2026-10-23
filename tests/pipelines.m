@@ -33,6 +33,15 @@ int pipeline_first_main(int argc, char **argv) {
 }
 
 int pipeline_envprobe_main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "valid")) {
+        char **env = environmentVariables(ios_currentPid());
+        for (; env && *env; env++) {
+            const char *equals = strchr(*env, '=');
+            if (!equals || equals == *env) return 7;
+        }
+        fprintf(thread_stdout, "valid\n");
+        return 0;
+    }
     const char *value = ios_getenv("FOO");
     fprintf(thread_stdout, "%s\n", value ? value : "missing");
     return 0;
@@ -139,6 +148,9 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[2], "wasm-consumer-skips")) {
             script = "wasm emit | wasm skip; printf 'next\\n'";
             expected = "next\n";
+        } else if (!strcmp(argv[2], "unset-environment")) {
+            script = "unset ASHELL_ABSENT; envprobe valid; printf x | envprobe valid; exec envprobe valid";
+            expected = "valid\nvalid\nvalid\n";
         } else if (!strcmp(argv[2], "pipeline-environment")) {
             script = "FOO=private; envprobe; printf x | envprobe; export FOO=outer; envprobe; FOO=inner envprobe; envprobe; printf x | envprobe; printf x | FOO=pipe envprobe; envprobe";
             expected = "private\nprivate\nouter\ninner\nouter\nouter\npipe\nouter\n";

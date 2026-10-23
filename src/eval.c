@@ -1245,7 +1245,7 @@ bail:
 		if (!(flags & EV_NOFORK)) {
 			int interactiveStatusBefore = ios_storeInteractive(); 
 			int stdinFlagsBefore = fcntl(fileno(thread_stdin), F_GETFL);
-			char** localEnvironment = listvars(0,0,NULL);
+			char** localEnvironment = listvars(0,VUNSET,NULL);
 			// Pass shell variables and command-prefix assignments.
 			socket_exec_command(argv, localEnvironment);
 			// store the result of executing the command:
@@ -1263,7 +1263,7 @@ bail:
 			setpwd(NULL, 0);
 			break;
 		} else {
-			char** localEnvironment = listvars(0,0,NULL);
+			char** localEnvironment = listvars(0,VUNSET,NULL);
 			ios_execve(argv[0], argv, localEnvironment);
 			stunalloc(localEnvironment);
 			break;
