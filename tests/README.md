@@ -26,7 +26,7 @@ Return to the repository root, copy the prerequisite's `Resources/commandDiction
 
 ```sh
 xcrun --sdk iphonesimulator clang -target arm64-apple-ios15.0-simulator -isysroot "$simulator_sdk" -fobjc-arc -Wall -Wextra -Wno-unused-parameter -F .build/probe/Frameworks -framework ios_system -framework Foundation -Wl,-rpath,@executable_path/Frameworks -Wl,-export_dynamic tests/pipelines.m -o .build/probe/pipelines
-for scenario in group early-reader heredoc subshell-next subshell-status wasm-producer-eof wasm-producer-fails wasm-consumer-skips pipeline-environment; do
+for scenario in group early-reader heredoc subshell-next subshell-status wasm-producer-eof wasm-producer-fails wasm-consumer-skips pipeline-environment pipeline-error-unwind; do
     xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/.build/probe/pipelines" "$PWD/.build/dash/src/dash" "$scenario"
 done
 ```
@@ -73,3 +73,5 @@ int ashell_pane_wait_editor_input(FILE *input);
 ```
 
 Begin installs a borrowed command stream and returns a lease; end waits for its users before closing it. Both return zero on success or an errno value. Dash restores its editor input and retires the lease when evaluation raises a shell exception. Background evaluation does not acquire foreground input. PID exchange returns the previous PID; negative PIDs identify shell waiters and must never be cancellation targets. The editor wait callback returns 0 for ready input, 1 for resize plus ready input, 2 for resize only, or a negative errno. Update the command thread's COLUMNS/LINES before returning a resize event. The callback runs before the builtin Unicode reader, so it must account for the consumer's input buffering. Without the optional exports, Dash retains its regular evaluation path.
+
+The `pipeline-error-unwind` case enables socket mode and supplies the application's optional foreground-PID exchange callback. A producer builtin rejects an invalid export name, unwinds the pipeline and lets its first-line consumer finish without input. The real Dash command returns status 1 with empty output, and the application callback must be back at its initial idle value. The pre-correction pipeline leaves a stale cancellation target. This checks the optional embedding callback contract without asserting the order of internal calls.

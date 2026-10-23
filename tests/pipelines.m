@@ -11,6 +11,14 @@
 
 static int (*shellMain)(int, char **);
 
+// The embedding application owns this optional callback contract.
+static int foregroundPID;
+int ashell_pane_exchange_foreground_pid(int pid) {
+    int previous = foregroundPID;
+    foregroundPID = pid;
+    return previous;
+}
+
 int pipeline_shell_main(int argc, char **argv) {
     return shellMain(argc, argv);
 }
@@ -134,9 +142,15 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[2], "pipeline-environment")) {
             script = "export FOO=outer; envprobe; FOO=inner envprobe; envprobe; printf x | envprobe; printf x | FOO=pipe envprobe; envprobe";
             expected = "outer\ninner\nouter\nouter\npipe\nouter\n";
+        } else if (!strcmp(argv[2], "pipeline-error-unwind")) {
+            script = "export 1bad=value | first-line";
+            expected = "";
+            expectedStatus = 1;
         } else return 2;
         initializeEnvironment();
         ios_switchSession("pipeline-regression");
+        if (!strcmp(argv[2], "pipeline-error-unwind"))
+            ios_setenv("ASHELL_IOS_SOCKET_INPUT", "1", 1);
         // Dash resolves external commands through PATH before ios_system dispatch.
         char markerDirectory[PATH_MAX];
         snprintf(markerDirectory, sizeof(markerDirectory), "%spipeline-markers.XXXXXX", NSTemporaryDirectory().fileSystemRepresentation);
@@ -174,11 +188,13 @@ int main(int argc, char **argv) {
         rewind(output);
         char actual[64] = {0};
         size_t length = fread(actual, 1, sizeof(actual) - 1, output);
-        BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus;
+        BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus && foregroundPID == 0;
         ios_setStreams(stdin, stdout, stderr);
         if (fclose(input) || fclose(output) || fclose(error)) return 1;
         alarm(0);
         dprintf(STDERR_FILENO, "Dash %s: status=%d bytes=%zu %s\n", argv[2], status, length, passed ? "PASS" : "FAIL");
+        if (!strcmp(argv[2], "pipeline-error-unwind"))
+            dprintf(STDERR_FILENO, "Foreground idle after pipeline error: %s\n", foregroundPID == 0 ? "PASS" : "FAIL");
         dlclose(library);
         unlink(markerPath);
         snprintf(markerPath, sizeof(markerPath), "%s/wasm", markerDirectory);

@@ -6,7 +6,7 @@ Use upstream libedit 20260512-3.1, archive SHA256 432d5e7ea8b0116dd39f2eca7bc11d
 
 The existing pipeline/login changes require the caller-owned command-tree API in holzschu/ios_system#181. This socket adapter adds no ios_system API. The application may export `int ashell_pane_wait_editor_input(FILE *input)`; Dash resolves it dynamically. Return 1 for readable input, a value greater than 1 for a resize notification, 0 to use the normal reader, or a negative errno on failure. The callback must operate on this pane's input and must not install process-global signal handlers. The generic a-Shell NativePane implementation supplies this callback and updates COLUMNS and LINES. Without the callback, character input remains available but resize wakeups are not provided.
 
-Socket editors disable libedit's process-global signal ownership. They obtain environment values through the embedding runtime's getenv and initial dimensions from COLUMNS and LINES. No kernel PTY, ioctl or process signal support is emulated. Socket ETX dispatch is a separate change layered on this adapter.
+Socket editors disable libedit's process-global signal ownership. They obtain environment values through the embedding runtime's getenv and initial dimensions from COLUMNS and LINES. No kernel PTY, ioctl or process signal support is emulated. Socket ETX dispatch uses Dash's existing SIGINT handler and runs pending traps before reading again.
 
 Qualification must enter the actual app command boundary and use SSH. Check Unicode, Return, prompt Ctrl-D, raw child input and terminal resize. Source extraction and compilation alone do not establish interactive behavior or physical-device support.
 

@@ -885,20 +885,31 @@ evalpipe(union node *n, int flags)
 	int interactiveStatusBefore = ios_storeInteractive(); // store interactive status.
 	int pid = ios_fork();
 	int previous = socket_foreground_pid(pid);
-	for (int j = pipelen - 1; j >= 1; j--) {
-		if (pipe(pip) < 0) {
-			sh_error("Pipe call failed");
+	struct jmploc frame;
+	struct jmploc *saved_handler = handler;
+	int raised = setjmp(frame.loc);
+	if (!raised) {
+		handler = &frame;
+		for (int j = pipelen - 1; j >= 1; j--) {
+			if (pipe(pip) < 0) {
+				sh_error("Pipe call failed");
+			}
+			// Create stdin for the command:
+			ios_dup2(pip[0], STDIN_FILENO); // sets child_stdin
+			evaltree(lplist[j]->n, flags | EV_NOFORK); // starts command with child_stdin -> thread_stdin
+			// Create stdout for the next command:
+			ios_dup2(pip[1], STDOUT_FILENO);
 		}
-		// Create stdin for the command:
-		ios_dup2(pip[0], STDIN_FILENO); // sets child_stdin
-		evaltree(lplist[j]->n, flags | EV_NOFORK); // starts command with child_stdin -> thread_stdin
-		// Create stdout for the next command:
-		ios_dup2(pip[1], STDOUT_FILENO);
+
+		eval_pipeline_producer(lplist, flags);
+		// Now wait for the last command at the end of the pipe to finish:
+		ios_waitpid(pid);
 	}
-	eval_pipeline_producer(lplist, flags);
-	// Now wait for the last command at the end of the pipe to finish:
-	ios_waitpid(pid); 
+	handler = saved_handler;
+	/* Pipeline errors must restore the enclosing cancellation target too. */
 	socket_foreground_pid(previous);
+	if (raised)
+		longjmp(saved_handler->loc, raised);
 	// restore "interactive" status
 	if (interactiveStatusBefore) 
 		ios_startInteractive(); 
