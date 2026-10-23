@@ -24,6 +24,12 @@ int pipeline_first_main(int argc, char **argv) {
     return status;
 }
 
+int pipeline_envprobe_main(int argc, char **argv) {
+    const char *value = ios_getenv("FOO");
+    fprintf(thread_stdout, "%s\n", value ? value : "missing");
+    return 0;
+}
+
 // Stand-in for a-Shell's synchronous WebAssembly queue: each `wasm` command is stacked and
 // blocks until the caller's wait runs the stack, producer first. The first argument
 // picks the behaviour: emit writes a block, fail writes nothing, drain counts its input and
@@ -125,6 +131,9 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[2], "wasm-consumer-skips")) {
             script = "wasm emit | wasm skip; printf 'next\\n'";
             expected = "next\n";
+        } else if (!strcmp(argv[2], "pipeline-environment")) {
+            script = "export FOO=outer; envprobe; FOO=inner envprobe; envprobe; printf x | envprobe; printf x | FOO=pipe envprobe; envprobe";
+            expected = "outer\ninner\nouter\nouter\npipe\nouter\n";
         } else return 2;
         initializeEnvironment();
         ios_switchSession("pipeline-regression");
@@ -139,6 +148,9 @@ int main(int argc, char **argv) {
         snprintf(markerPath, sizeof(markerPath), "%s/wasm", markerDirectory);
         marker = fopen(markerPath, "w");
         if (!marker || fclose(marker) || chmod(markerPath, 0755)) return 2;
+        snprintf(markerPath, sizeof(markerPath), "%s/envprobe", markerDirectory);
+        marker = fopen(markerPath, "w");
+        if (!marker || fclose(marker) || chmod(markerPath, 0755)) return 2;
         ios_setenv("PATH", markerDirectory, 1);
         FILE *input = tmpfile(), *output = tmpfile(), *error = tmpfile();
         if (!input || !output || !error) return 2;
@@ -148,6 +160,7 @@ int main(int argc, char **argv) {
         replaceCommand(@"dash", @"pipeline_shell_main", false);
         replaceCommand(@"first-line", @"pipeline_first_main", false);
         replaceCommand(@"wasm", @"pipeline_wasm_main", false);
+        replaceCommand(@"envprobe", @"pipeline_envprobe_main", false);
         // Quote embedded apostrophes for the outer ios_system command parser.
         NSString *quoted = [[NSString stringWithUTF8String:script] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
         NSString *command = [NSString stringWithFormat:@"dash -c '%@'", quoted];
@@ -167,6 +180,8 @@ int main(int argc, char **argv) {
         alarm(0);
         dprintf(STDERR_FILENO, "Dash %s: status=%d bytes=%zu %s\n", argv[2], status, length, passed ? "PASS" : "FAIL");
         dlclose(library);
+        unlink(markerPath);
+        snprintf(markerPath, sizeof(markerPath), "%s/wasm", markerDirectory);
         unlink(markerPath);
         rmdir(markerDirectory);
         return passed ? 0 : 1;

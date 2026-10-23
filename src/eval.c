@@ -1253,8 +1253,9 @@ bail:
 			setpwd(NULL, 0);
 			break;
 		} else {
-			// no execve here because without fork we share the same environment
-			ios_execv(argv[0], argv);
+			char** localEnvironment = environment();
+			ios_execve(argv[0], argv, localEnvironment);
+			stunalloc(localEnvironment);
 			break;
 		}
 		if (argv_0 != NULL) {
