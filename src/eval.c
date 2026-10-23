@@ -887,8 +887,7 @@ evalpipe(union node *n, int flags)
 	int previous = socket_foreground_pid(pid);
 	struct jmploc frame;
 	struct jmploc *saved_handler = handler;
-	int raised = setjmp(frame.loc);
-	if (!raised) {
+	if (!setjmp(frame.loc)) {
 		handler = &frame;
 		for (int j = pipelen - 1; j >= 1; j--) {
 			if (pipe(pip) < 0) {
@@ -904,12 +903,14 @@ evalpipe(union node *n, int flags)
 		eval_pipeline_producer(lplist, flags);
 		// Now wait for the last command at the end of the pipe to finish:
 		ios_waitpid(pid);
+	} else {
+		handler = saved_handler;
+		socket_foreground_pid(previous);
+		longjmp(saved_handler->loc, 1);
 	}
 	handler = saved_handler;
 	/* Pipeline errors must restore the enclosing cancellation target too. */
 	socket_foreground_pid(previous);
-	if (raised)
-		longjmp(saved_handler->loc, raised);
 	// restore "interactive" status
 	if (interactiveStatusBefore) 
 		ios_startInteractive(); 
