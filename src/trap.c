@@ -406,7 +406,7 @@ out:
 	exitreset();
 #if TARGET_OS_IPHONE
 	popallfiles();
-	if (parsefile->fd > 0) {
+	if (parsefile->fd > 0 && parsefile->fd != fileno(thread_stdin)) {
 		close(parsefile->fd);
 		parsefile->fd = 0;
 	}
