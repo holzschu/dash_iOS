@@ -285,9 +285,16 @@ dupredirect(redir, f)
 		/* if not ">&-" */
 		if (f >= 0) {
 #if TARGET_OS_IPHONE
-			if (f == 0) f = fileno(thread_stdin);
-			else if (f == 1) f = fileno(thread_stdout);
-			else if (f == 2) f = fileno(thread_stderr);
+			int owned = 0;
+			if (fd <= 2 && f > 2) {
+				int g = fcntl(f, F_DUPFD_CLOEXEC, 10);
+				if (g < 0) {
+					err = errno;
+					goto err;
+				}
+				f = g;
+				owned = 1;
+			}
 #endif
 #ifdef notyet
 			if (memory[f])
@@ -296,6 +303,10 @@ dupredirect(redir, f)
 #endif
 				if (dup2(f, fd) < 0) {
 					err = errno;
+#if TARGET_OS_IPHONE
+					if (owned)
+						close(f);
+#endif
 					goto err;
 				}
 			return;

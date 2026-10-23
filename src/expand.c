@@ -521,19 +521,6 @@ expbackq(union node *cmd, int flag)
 read:
 		if (in.fd < 0)
 			break;
-#if TARGET_OS_IPHONE
-		// It's possible that there is nothing to read on stdout, so we do a non-blocking chek:
-		int *fds = malloc((in.fd + 1) * sizeof(int)); 
-		FD_ZERO(fds);
-		FD_SET(in.fd, fds);
-		struct timeval tv;
-		tv.tv_sec = 0.0;
-		tv.tv_usec = 0.0;
-		int data_to_read = select(in.fd + 1, fds, NULL, NULL, &tv);
-		free(fds);
-		if (data_to_read <= 0)
-			break;
-#endif
 		do {
 			i = read(in.fd, buf, sizeof buf);
 		} while (i < 0 && errno == EINTR);
