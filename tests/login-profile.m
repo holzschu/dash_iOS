@@ -14,7 +14,7 @@ int main(void) {
         NSString *bin = [home stringByAppendingPathComponent:@"bin"];
         if (![files createDirectoryAtPath:bin withIntermediateDirectories:NO attributes:nil error:NULL] ||
             ![files createFileAtPath:[bin stringByAppendingPathComponent:@"dash"] contents:NSData.data attributes:nil]) return 2;
-        NSString *profile = @"printf 'PROFILE\\n' >> \"$HOME/profile-count\"\ndash -c 'printf CHILD_OK'\n";
+        NSString *profile = @"printf 'PROFILE\\n' >> \"$HOME/profile-count\"\ndash -ic 'printf CHILD_OK'\n";
         if (![profile writeToFile:[documents stringByAppendingPathComponent:@".profile"] atomically:YES encoding:NSUTF8StringEncoding error:NULL]) return 2;
         NSString *script = [home stringByAppendingPathComponent:@"command.sh"];
         if (![@"printf SCRIPT_OK" writeToFile:script atomically:YES encoding:NSUTF8StringEncoding error:NULL]) return 2;
