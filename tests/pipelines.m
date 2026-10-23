@@ -140,8 +140,8 @@ int main(int argc, char **argv) {
             script = "wasm emit | wasm skip; printf 'next\\n'";
             expected = "next\n";
         } else if (!strcmp(argv[2], "pipeline-environment")) {
-            script = "export FOO=outer; envprobe; FOO=inner envprobe; envprobe; printf x | envprobe; printf x | FOO=pipe envprobe; envprobe";
-            expected = "outer\ninner\nouter\nouter\npipe\nouter\n";
+            script = "FOO=private; envprobe; printf x | envprobe; export FOO=outer; envprobe; FOO=inner envprobe; envprobe; printf x | envprobe; printf x | FOO=pipe envprobe; envprobe";
+            expected = "missing\nmissing\nouter\ninner\nouter\nouter\npipe\nouter\n";
         } else if (!strcmp(argv[2], "pipeline-error-unwind")) {
             script = "export 1bad=value | first-line";
             expected = "";
@@ -198,6 +198,8 @@ int main(int argc, char **argv) {
         dlclose(library);
         unlink(markerPath);
         snprintf(markerPath, sizeof(markerPath), "%s/wasm", markerDirectory);
+        unlink(markerPath);
+        snprintf(markerPath, sizeof(markerPath), "%s/first-line", markerDirectory);
         unlink(markerPath);
         rmdir(markerDirectory);
         return passed ? 0 : 1;

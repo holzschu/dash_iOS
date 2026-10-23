@@ -1255,7 +1255,7 @@ bail:
 				ios_startInteractive(); 
 			else
 				ios_stopInteractive(); 
-			// free the list allocated by listvars 
+			// Free the list allocated by environment()
 			stunalloc(localEnvironment);
 			// reset stdin to non-blocking:
 			fcntl(fileno(thread_stdin), F_SETFL, stdinFlagsBefore);
