@@ -148,6 +148,9 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[2], "wasm-consumer-skips")) {
             script = "wasm emit | wasm skip; printf 'next\\n'";
             expected = "next\n";
+        } else if (!strcmp(argv[2], "unset-semantics")) {
+            script = "export FOO=outer; unset FOO; envprobe; printf x | envprobe; exec envprobe";
+            expected = "missing\nmissing\nmissing\n";
         } else if (!strcmp(argv[2], "unset-environment")) {
             script = "unset ASHELL_ABSENT; envprobe valid; printf x | envprobe valid; exec envprobe valid";
             expected = "valid\nvalid\nvalid\n";
@@ -198,7 +201,10 @@ int main(int argc, char **argv) {
         rewind(output);
         char actual[64] = {0};
         size_t length = fread(actual, 1, sizeof(actual) - 1, output);
-        BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus && foregroundPID == 0;
+        // Producer error (2) and the EOF consumer (1) can finish in either order.
+        BOOL errorUnwind = !strcmp(argv[2], "pipeline-error-unwind");
+        BOOL statusMatches = errorUnwind ? (status == 1 || status == 2) : status == expectedStatus;
+        BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && statusMatches && foregroundPID == 0;
         ios_setStreams(stdin, stdout, stderr);
         if (fclose(input) || fclose(output) || fclose(error)) return 1;
         alarm(0);

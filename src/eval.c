@@ -904,6 +904,10 @@ evalpipe(union node *n, int flags)
 	} else {
 		handler = saved_handler;
 		socket_foreground_pid(previous);
+		if (interactiveStatusBefore)
+			ios_startInteractive();
+		else
+			ios_stopInteractive();
 		longjmp(saved_handler->loc, 1);
 	}
 	handler = saved_handler;
