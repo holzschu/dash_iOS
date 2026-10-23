@@ -34,3 +34,18 @@ done
 The baseline leaks a grouped producer's second line into the caller output, times out after an infinite builtin producer loses its reader, and exits the enclosing shell after `(exit 7)` instead of running the next command. The patched results are `group: status=0 bytes=4`, `early-reader: status=0 bytes=2`, `heredoc: status=0 bytes=4`, `subshell-next: status=0 bytes=5`, and `subshell-status: status=7 bytes=0`, `wasm-producer-eof: status=0 bytes=5`, `wasm-producer-fails: status=0 bytes=7` and `wasm-consumer-skips: status=0 bytes=5`, each with `PASS`. The same executable tests both libraries. These checks do not qualify interactive libedit hooks or physical-device behavior.
 
 The `wasm-*` cases register a stand-in `wasm` command that stacks its call and blocks, as a-Shell does, until the caller's wait runs the stack, producer first. `wasm-producer-eof` runs `wasm emit | wasm drain`: the consumer prints the number of bytes it read, `4096`, so the output is `4096` and a newline (5 bytes). Without ios_system owning a simple external producer's pipe in `eval_pipeline_producer`, the producer's write end stays open, the consumer never sees EOF and the alarm fires. `wasm-producer-fails` (`wasm fail | wasm drain; printf next`) and `wasm-consumer-skips` (a consumer that exits without reading, so the producer writes into a closed pipe) check that the enclosing shell survives and runs the next command.
+
+# Nested login profile
+
+`login-profile.m` runs real commands through ios_system with six Dash frameworks. Its disposable `HOME/Documents/.profile` invokes a child Dash. Eight root invocations must each read the profile once, capture exactly `CHILD_OKROOT_OK` per invocation, produce no stderr and leave the caller streams open until the fixture closes them. The eight roots also exercise reuse beyond the six interpreter slots. The fixture applies and checks the stock `alias sh dash` command to match the embedding app's dispatch configuration. The twenty-second alarm bounds recursion or a stalled wait.
+
+Prepare a probe bundle directory with `Frameworks/ios_system.framework`, all six same-source `dash`, `dashA` through `dashE` frameworks, and ios_system's `Resources/commandDictionary.plist` beside the executable. Use the caller-owned stream prerequisite described above. Build and run with the selected Simulator:
+
+```sh
+xcrun --sdk iphonesimulator clang -target arm64-apple-ios15.0-simulator -fobjc-arc -DNDEBUG -Wall -Wextra -Wno-unused-parameter -F "$PROBE/Frameworks" -framework ios_system -framework Foundation -Wl,-rpath,@executable_path/Frameworks tests/login-profile.m -o "$PROBE/login-profile"
+for framework in "$PROBE"/Frameworks/*.framework; do codesign --force --sign - "$framework"; done
+codesign --force --sign - "$PROBE/login-profile"
+xcrun simctl spawn "$SIMULATOR_UDID" "$PROBE/login-profile"
+```
+
+Before the fix, the marker exists only in ios_system's environment after Dash has imported its variables. A nested exec replaces that environment and drops the marker, so each child rereads the profile until all six slots are occupied: `completed=0 bytes=47 visits=6 FAIL`, exit 1. With the exported Dash variable, the same fixture prints `completed=8 bytes=120 visits=8 PASS`, exit 0. This checks noninteractive startup on arm64 Simulator; physical-device startup remains a separate check.

@@ -137,6 +137,7 @@ procargs(int argc, char **argv)
 	if (!getenv("_DASH_LOGIN_SHELL")) {
 		login = 1;
 		setenv("_DASH_LOGIN_SHELL", "1", 1);
+		setvar("_DASH_LOGIN_SHELL", "1", VEXPORT);
 	}
 	minusc = NULL;
 #endif
