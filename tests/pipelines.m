@@ -8,6 +8,13 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <unistd.h>
+#include <fcntl.h>
+
+static int openDescriptors(void) {
+    int count=0;
+    for(int fd=0;fd<256;fd++)if(fcntl(fd,F_GETFD)>=0)count++;
+    return count;
+}
 
 static int (*shellMain)(int, char **);
 
@@ -157,6 +164,12 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[2], "pipeline-environment")) {
             script = "FOO=private; envprobe; printf x | envprobe; export FOO=outer; envprobe; FOO=inner envprobe; envprobe; printf x | envprobe; printf x | FOO=pipe envprobe; envprobe";
             expected = "private\nprivate\nouter\ninner\nouter\nouter\npipe\nouter\n";
+        } else if (!strcmp(argv[2], "builtin-consumer-error")) {
+            script = "export 1bad=v | read x"; expected = ""; expectedStatus = 2;
+        } else if (!strcmp(argv[2], "builtin-eof-error")) {
+            script = "export 1bad=v | read x </dev/null"; expected = ""; expectedStatus = 2;
+        } else if (!strcmp(argv[2], "consumer-expansion-error")) {
+            script = "printf x | read ${ASHELL_MISSING:?missing}"; expected = ""; expectedStatus = 2;
         } else if (!strcmp(argv[2], "pipeline-error-unwind")) {
             script = "export 1bad=value | first-line";
             expected = "";
@@ -192,16 +205,22 @@ int main(int argc, char **argv) {
         NSString *quoted = [[NSString stringWithUTF8String:script] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
         NSString *command = [NSString stringWithFormat:@"dash -c '%@'", quoted];
         joinMainThread = false;
+        int descriptorsBefore = openDescriptors();
         pid_t root = ios_fork();
         ios_system(command.UTF8String);
         ios_waitpid(root);
         ashell_wait_owned_streams(registration);
         int status = ios_getCommandStatus();
+        int descriptorsAfter = openDescriptors();
         ashell_unregister_owned_streams(&registration);
         rewind(output);
         char actual[64] = {0};
         size_t length = fread(actual, 1, sizeof(actual) - 1, output);
         BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus && foregroundPID == 0;
+        if (!strcmp(argv[2],"consumer-expansion-error")) {
+            dprintf(2,"consumer expansion descriptors before=%d after=%d %s\n",descriptorsBefore,descriptorsAfter,descriptorsBefore==descriptorsAfter?"PASS":"FAIL");
+            passed=passed&&descriptorsBefore==descriptorsAfter;
+        }
         ios_setStreams(stdin, stdout, stderr);
         if (fclose(input) || fclose(output) || fclose(error)) return 1;
         alarm(0);

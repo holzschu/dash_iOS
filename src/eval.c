@@ -883,7 +883,7 @@ evalpipe(union node *n, int flags)
 	int interactiveStatusBefore = ios_storeInteractive(); // store interactive status.
 	int pid = ios_fork();
 	int previous = socket_foreground_pid(pid);
-	volatile int consumers_started = 0;
+	volatile int pending_write = -1;
 	struct jmploc frame;
 	struct jmploc *saved_handler = handler;
 	if (!setjmp(frame.loc)) {
@@ -892,12 +892,13 @@ evalpipe(union node *n, int flags)
 			if (pipe(pip) < 0) {
 				sh_error("Pipe call failed");
 			}
+			pending_write = pip[1];
 			// Create stdin for the command:
 			ios_dup2(pip[0], STDIN_FILENO); // sets child_stdin
 			evaltree(lplist[j]->n, flags | EV_NOFORK); // starts command with child_stdin -> thread_stdin
-			consumers_started = 1;
 			// Create stdout for the next command:
 			ios_dup2(pip[1], STDOUT_FILENO);
+			pending_write = -1;
 		}
 
 		eval_pipeline_producer(lplist, flags);
@@ -910,8 +911,14 @@ evalpipe(union node *n, int flags)
 		/* The producer cleanup publishes EOF before throwing. Retire any
 		 * pending write stream left by consumer setup before waiting too. */
 		ios_activateChildStreams(&pending.input, &pending.output, &pending.error);
+		if (pending.input)
+			fclose(thread_stdin);
 		finish_pipeline_producer(&pending);
-		if (consumers_started)
+		if (pending_write >= 0)
+			close(pending_write);
+		if (ios_getThreadId(pid) == (pthread_t)-1)
+			ios_storeThreadId(NULL); // Retire the current unstarted reservation and unlock allocation.
+		else
 			ios_waitpid(pid);
 		exitstatus = saved_status;
 		socket_foreground_pid(previous);
