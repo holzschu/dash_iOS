@@ -160,7 +160,7 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[2], "pipeline-error-unwind")) {
             script = "export 1bad=value | first-line";
             expected = "";
-            expectedStatus = 1;
+            expectedStatus = 2;
         } else return 2;
         initializeEnvironment();
         ios_switchSession("pipeline-regression");
@@ -201,10 +201,7 @@ int main(int argc, char **argv) {
         rewind(output);
         char actual[64] = {0};
         size_t length = fread(actual, 1, sizeof(actual) - 1, output);
-        // Producer error (2) and the EOF consumer (1) can finish in either order.
-        BOOL errorUnwind = !strcmp(argv[2], "pipeline-error-unwind");
-        BOOL statusMatches = errorUnwind ? (status == 1 || status == 2) : status == expectedStatus;
-        BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && statusMatches && foregroundPID == 0;
+        BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus && foregroundPID == 0;
         ios_setStreams(stdin, stdout, stderr);
         if (fclose(input) || fclose(output) || fclose(error)) return 1;
         alarm(0);

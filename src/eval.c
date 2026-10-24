@@ -883,6 +883,7 @@ evalpipe(union node *n, int flags)
 	int interactiveStatusBefore = ios_storeInteractive(); // store interactive status.
 	int pid = ios_fork();
 	int previous = socket_foreground_pid(pid);
+	volatile int consumers_started = 0;
 	struct jmploc frame;
 	struct jmploc *saved_handler = handler;
 	if (!setjmp(frame.loc)) {
@@ -894,6 +895,7 @@ evalpipe(union node *n, int flags)
 			// Create stdin for the command:
 			ios_dup2(pip[0], STDIN_FILENO); // sets child_stdin
 			evaltree(lplist[j]->n, flags | EV_NOFORK); // starts command with child_stdin -> thread_stdin
+			consumers_started = 1;
 			// Create stdout for the next command:
 			ios_dup2(pip[1], STDOUT_FILENO);
 		}
@@ -902,7 +904,16 @@ evalpipe(union node *n, int flags)
 		// Now wait for the last command at the end of the pipe to finish:
 		ios_waitpid(pid);
 	} else {
+		int saved_status = exitstatus;
+		struct pipeline_producer pending = { .previous_output = pipeline_stdout };
 		handler = saved_handler;
+		/* The producer cleanup publishes EOF before throwing. Retire any
+		 * pending write stream left by consumer setup before waiting too. */
+		ios_activateChildStreams(&pending.input, &pending.output, &pending.error);
+		finish_pipeline_producer(&pending);
+		if (consumers_started)
+			ios_waitpid(pid);
+		exitstatus = saved_status;
 		socket_foreground_pid(previous);
 		if (interactiveStatusBefore)
 			ios_startInteractive();
