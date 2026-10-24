@@ -419,6 +419,7 @@ loop:
 		const char *lpathopt = pathopt;
 
 		fullname = stackblock();
+		
 		idx++;
 		if (lpathopt) {
 			if (*lpathopt == 'b') {
@@ -493,7 +494,17 @@ loop:
 	if (cmdp && updatetbl)
 		delete_cmd_entry();
 	if (act & DO_ERR)
+#if TARGET_OS_IPHONE
+		// Don't write "not found" errors yet.
+		if (e != ENOENT) {
+#endif
 		sh_warnx("%s: %s", name, errmsg(e, E_EXEC));
+#if TARGET_OS_IPHONE
+		entry->cmdtype = CMDERROR;
+		return;
+		}
+#endif
+
 fail:
 	entry->cmdtype = CMDUNKNOWN;
 	return;
