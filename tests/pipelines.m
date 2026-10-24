@@ -170,8 +170,16 @@ int main(int argc, char **argv) {
             script = "true | true"; expected = "";
         } else if (!strcmp(argv[2], "builtin-colon")) {
             script = "printf x | :"; expected = "";
-        } else if (!strcmp(argv[2], "consumer-substitution-error")) {
-            script = "printf x | read \"$(true)\" ${ASHELL_MISSING:?m}"; expected = ""; expectedStatus = 2;
+        } else if (!strcmp(argv[2], "command-consumer")) {
+            script = "printf 'x\\n' | command first-line"; expected = "x\n";
+        } else if (!strcmp(argv[2], "builtin-false")) {
+            script = "true | false"; expected = ""; expectedStatus = 1;
+        } else if (!strcmp(argv[2], "builtin-read-status")) {
+            script = "printf x | read y </dev/null; printf '%s\\n' \"$?\""; expected = "1\n";
+        } else if (!strcmp(argv[2], "borrowed-input")) {
+            script = "printf 'a\\nb\\n' >\"$PIPELINE_FILE\"; exec 3<\"$PIPELINE_FILE\"; read a <&3; read b <&3; printf '%s%s\\n' \"$a\" \"$b\"; exec 3<&-"; expected = "ab\n";
+        } else if (!strcmp(argv[2], "builtin-read-error")) {
+            script = "printf x | read -Z y </dev/null; printf 'next\\n'"; expected = "next\n";
         } else if (!strcmp(argv[2], "builtin-eof-error")) {
             script = "export 1bad=v | read x </dev/null"; expected = ""; expectedStatus = 2;
         } else if (!strcmp(argv[2], "consumer-expansion-error")) {
@@ -198,6 +206,9 @@ int main(int argc, char **argv) {
         marker = fopen(markerPath, "w");
         if (!marker || fclose(marker) || chmod(markerPath, 0755)) return 2;
         ios_setenv("PATH", markerDirectory, 1);
+        char dataPath[PATH_MAX];
+        snprintf(dataPath,sizeof(dataPath),"%s/data",markerDirectory);
+        ios_setenv("PIPELINE_FILE",dataPath,1);
         FILE *input = tmpfile(), *output = tmpfile(), *error = tmpfile();
         if (!input || !output || !error) return 2;
         void *registration = NULL;
@@ -223,9 +234,17 @@ int main(int argc, char **argv) {
         char actual[64] = {0};
         size_t length = fread(actual, 1, sizeof(actual) - 1, output);
         BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus && foregroundPID == 0;
-        if (!strcmp(argv[2],"consumer-expansion-error") || !strcmp(argv[2],"consumer-substitution-error") || !strcmp(argv[2],"builtin-eof-error") || !strncmp(argv[2],"builtin-",8)) {
+        BOOL descriptorsRequired = !strncmp(argv[2],"consumer-",9) || !strncmp(argv[2],"builtin-",8) || !strcmp(argv[2],"command-consumer") || !strcmp(argv[2],"native-producer-builtin");
+        if (descriptorsRequired) {
             dprintf(2,"pipeline descriptors before=%d after=%d %s\n",descriptorsBefore,descriptorsAfter,descriptorsBefore==descriptorsAfter?"PASS":"FAIL");
             passed=passed&&descriptorsBefore==descriptorsAfter;
+        }
+        if (!strcmp(argv[2],"builtin-colon")) {
+            fflush(error);
+            long errorBytes=ftell(error);
+            dprintf(2,"colon stderr bytes=%ld %s\n",errorBytes,errorBytes==0?"PASS":"FAIL");
+            if(errorBytes){char message[128]={0};rewind(error);fread(message,1,sizeof(message)-1,error);dprintf(2,"colon stderr: %s",message);}
+            passed=passed&&errorBytes==0;
         }
         ios_setStreams(stdin, stdout, stderr);
         if (fclose(input) || fclose(output) || fclose(error)) return 1;
@@ -239,6 +258,7 @@ int main(int argc, char **argv) {
         unlink(markerPath);
         snprintf(markerPath, sizeof(markerPath), "%s/first-line", markerDirectory);
         unlink(markerPath);
+        unlink(dataPath);
         rmdir(markerDirectory);
         return passed ? 0 : 1;
     }
