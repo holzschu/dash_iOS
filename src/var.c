@@ -74,7 +74,7 @@ struct localvar_list {
 	struct localvar *lv;
 };
 
-MKINIT struct localvar_list *localvar_stack;
+MKINIT __thread struct localvar_list *localvar_stack;
 
 const char defpathvar[] =
 	"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -106,7 +106,11 @@ struct var varinit[] = {
 #endif
 };
 
+#if !TARGET_OS_IPHONE
 STATIC struct var *vartab[VTABSIZE];
+#else
+STATIC __thread struct var *vartab[VTABSIZE];
+#endif
 
 STATIC struct var **hashvar(const char *);
 STATIC int vpcmp(const void *, const void *);
@@ -123,15 +127,24 @@ INCLUDE <sys/stat.h>
 INCLUDE "cd.h"
 INCLUDE "output.h"
 INCLUDE "var.h"
+#if !TARGET_OS_IPHONE
 MKINIT char **environ;
+#endif
+INCLUDE "ios_error.h"
 INIT {
 	char **envp;
 	static char ppid[32] = "PPID=";
 	const char *p;
 	struct stat64 st1, st2;
-
+#if TARGET_OS_IPHONE
+	extern char** environmentVariables(pid_t pid);
+	extern pid_t ios_currentPid(void);
+	char** environ = environmentVariables(ios_currentPid());
+#endif
 	initvar();
-	for (envp = environ ; *envp ; envp++) {
+	/* the per-command environment of ios_system, not the process-global environ */
+	envp = environmentVariables(ios_currentPid());
+	for (; envp && *envp ; envp++) {
 		p = endofname(*envp);
 		if (p != *envp && *p == '=') {
 			setvareq(*envp, VEXPORT|VTEXTFIXED);
@@ -309,6 +322,9 @@ out:
  * Find the value of a variable.  Returns NULL if not set.
  */
 
+#if TARGET_OS_IPHONE
+static char randomValue[6];
+#endif
 char *
 lookupvar(const char *name)
 {
@@ -322,6 +338,13 @@ lookupvar(const char *name)
 #endif
 		return strchrnul(v->text, '=') + 1;
 	}
+#if TARGET_OS_IPHONE
+	// iOS addition: $RANDOM variable:
+	if (strcmp(name, "RANDOM=") == 0) {
+		sprintf(randomValue, "%d", random()&0x7FFF);
+		return randomValue;
+	}
+#endif
 	return NULL;
 }
 
@@ -564,7 +587,6 @@ struct localvar_list *pushlocalvars(int push)
 	ll->next = top;
 	localvar_stack = ll;
 	INTON;
-
 out:
 	return top;
 }
