@@ -705,8 +705,10 @@ finish_pipeline_producer(void *argument)
 		fclose(thread_stdout);
 		thread_stdout = producer->output;
 	}
-	if (producer->input)
+	if (producer->input) {
+		fclose(thread_stdin);
 		thread_stdin = producer->input;
+	}
 	if (producer->error)
 		thread_stderr = producer->error;
 	free(producer->commands);
@@ -809,6 +811,17 @@ expredir(union node *n)
  */
 #if TARGET_OS_IPHONE
 extern void ios_IsMainThread(int value);
+extern void ios_storeThreadIdForPid(pid_t pid, pthread_t thread);
+
+static void
+wait_pipeline_consumer(pid_t pid)
+{
+	if (ios_getThreadId(pid) == (pthread_t)-1) {
+		ios_storeThreadIdForPid(pid, NULL);
+	}
+	else
+		ios_waitpid(pid);
+}
 #endif
 
 STATIC int
@@ -881,6 +894,11 @@ evalpipe(union node *n, int flags)
 	// Keep the stream ordering, start commands in order, wait for the last one to end.
 	ios_IsMainThread(0);
 	int interactiveStatusBefore = ios_storeInteractive(); // store interactive status.
+	struct pipeline_producer *consumer = calloc(1, sizeof(*consumer));
+	if (!consumer) {
+		free(lplist);
+		sh_error("Out of memory");
+	}
 	int pid = ios_fork();
 	int previous = socket_foreground_pid(pid);
 	volatile int pending_write = -1;
@@ -895,7 +913,23 @@ evalpipe(union node *n, int flags)
 			pending_write = pip[1];
 			// Create stdin for the command:
 			ios_dup2(pip[0], STDIN_FILENO); // sets child_stdin
+			/* Inline builtins own their pipe across expansion and redirects;
+			 * native consumers still transfer pending streams to ios_system. */
+			union node *command = lplist[j]->n;
+			struct cmdentry entry;
+			if (command->type == NCMD && command->ncmd.args &&
+			    goodname(command->ncmd.args->narg.text)) {
+				find_command(command->ncmd.args->narg.text, &entry, 0, pathval());
+				if (entry.cmdtype == CMDBUILTIN) {
+					consumer->previous_output = pipeline_stdout;
+					ios_activateChildStreams(&consumer->input, &consumer->output, &consumer->error);
+				}
+			}
 			evaltree(lplist[j]->n, flags | EV_NOFORK); // starts command with child_stdin -> thread_stdin
+			if (consumer->input || consumer->output || consumer->error) {
+				finish_pipeline_producer(consumer);
+				memset(consumer, 0, sizeof(*consumer));
+			}
 			// Create stdout for the next command:
 			ios_dup2(pip[1], STDOUT_FILENO);
 			pending_write = -1;
@@ -903,23 +937,21 @@ evalpipe(union node *n, int flags)
 
 		eval_pipeline_producer(lplist, flags);
 		// Now wait for the last command at the end of the pipe to finish:
-		ios_waitpid(pid);
+		wait_pipeline_consumer(pid);
 	} else {
 		int saved_status = exitstatus;
 		struct pipeline_producer pending = { .previous_output = pipeline_stdout };
 		handler = saved_handler;
+		if (consumer->input || consumer->output || consumer->error)
+			finish_pipeline_producer(consumer);
+		free(consumer);
 		/* The producer cleanup publishes EOF before throwing. Retire any
 		 * pending write stream left by consumer setup before waiting too. */
 		ios_activateChildStreams(&pending.input, &pending.output, &pending.error);
-		if (pending.input)
-			fclose(thread_stdin);
 		finish_pipeline_producer(&pending);
 		if (pending_write >= 0)
 			close(pending_write);
-		if (ios_getThreadId(pid) == (pthread_t)-1)
-			ios_storeThreadId(NULL); // Retire the current unstarted reservation and unlock allocation.
-		else
-			ios_waitpid(pid);
+		wait_pipeline_consumer(pid);
 		exitstatus = saved_status;
 		socket_foreground_pid(previous);
 		if (interactiveStatusBefore)
@@ -928,6 +960,7 @@ evalpipe(union node *n, int flags)
 			ios_stopInteractive();
 		longjmp(saved_handler->loc, 1);
 	}
+	free(consumer);
 	handler = saved_handler;
 	/* Pipeline errors must restore the enclosing cancellation target too. */
 	socket_foreground_pid(previous);
@@ -1374,7 +1407,9 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 		status = (*cmd->builtin)(argc, argv);
 #if TARGET_OS_IPHONE
 		if (old_stdin != NULL) {
-			fflush(thread_stdin);
+			if (thread_stdin != borrowed_stdin && thread_stdin != borrowed_stdout &&
+					thread_stdin != borrowed_stderr)
+				fclose(thread_stdin);
 			thread_stdin = old_stdin;
 		}
 		if (old_stderr != NULL) {

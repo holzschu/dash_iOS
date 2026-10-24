@@ -164,8 +164,14 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[2], "pipeline-environment")) {
             script = "FOO=private; envprobe; printf x | envprobe; export FOO=outer; envprobe; FOO=inner envprobe; envprobe; printf x | envprobe; printf x | FOO=pipe envprobe; envprobe";
             expected = "private\nprivate\nouter\ninner\nouter\nouter\npipe\nouter\n";
-        } else if (!strcmp(argv[2], "builtin-consumer-error")) {
-            script = "export 1bad=v | read x"; expected = ""; expectedStatus = 2;
+        } else if (!strcmp(argv[2], "builtin-success")) {
+            script = "printf x | read y </dev/null; printf 'next\\n'"; expected = "next\n";
+        } else if (!strcmp(argv[2], "builtin-true")) {
+            script = "true | true"; expected = "";
+        } else if (!strcmp(argv[2], "builtin-colon")) {
+            script = "printf x | :"; expected = "";
+        } else if (!strcmp(argv[2], "consumer-substitution-error")) {
+            script = "printf x | read \"$(true)\" ${ASHELL_MISSING:?m}"; expected = ""; expectedStatus = 2;
         } else if (!strcmp(argv[2], "builtin-eof-error")) {
             script = "export 1bad=v | read x </dev/null"; expected = ""; expectedStatus = 2;
         } else if (!strcmp(argv[2], "consumer-expansion-error")) {
@@ -217,8 +223,8 @@ int main(int argc, char **argv) {
         char actual[64] = {0};
         size_t length = fread(actual, 1, sizeof(actual) - 1, output);
         BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus && foregroundPID == 0;
-        if (!strcmp(argv[2],"consumer-expansion-error")) {
-            dprintf(2,"consumer expansion descriptors before=%d after=%d %s\n",descriptorsBefore,descriptorsAfter,descriptorsBefore==descriptorsAfter?"PASS":"FAIL");
+        if (!strcmp(argv[2],"consumer-expansion-error") || !strcmp(argv[2],"consumer-substitution-error") || !strcmp(argv[2],"builtin-eof-error") || !strncmp(argv[2],"builtin-",8)) {
+            dprintf(2,"pipeline descriptors before=%d after=%d %s\n",descriptorsBefore,descriptorsAfter,descriptorsBefore==descriptorsAfter?"PASS":"FAIL");
             passed=passed&&descriptorsBefore==descriptorsAfter;
         }
         ios_setStreams(stdin, stdout, stderr);
