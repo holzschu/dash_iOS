@@ -167,6 +167,7 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[2], "command-consumer")) {
             script = "printf 'x\\n' | command first-line"; expected = "x\n";
         } else if (!strcmp(argv[2], "pipeline-error-next")) {
+            // Preserve the dash_iOS baseline list abort deliberately.
             script = "export 1bad=value | first-line; printf 'next\\n'";
             expected = "";
             expectedStatus = 1;

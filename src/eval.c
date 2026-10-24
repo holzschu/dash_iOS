@@ -920,7 +920,7 @@ evalpipe(union node *n, int flags)
 			close(pending_write);
 		if (ios_getThreadId(pid) != (pthread_t)-1)
 			ios_waitpid(pid);
-		/* Keep stock last-consumer status and list abort for producer errors. */
+		/* Report the waited consumer status, matching the measured baseline. */
 		exitstatus = producer_error ? ios_getCommandStatus() : saved_status;
 		socket_foreground_pid(previous);
 		if (interactiveStatusBefore)
