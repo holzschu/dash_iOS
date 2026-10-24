@@ -705,10 +705,8 @@ finish_pipeline_producer(void *argument)
 		fclose(thread_stdout);
 		thread_stdout = producer->output;
 	}
-	if (producer->input) {
-		fclose(thread_stdin);
+	if (producer->input)
 		thread_stdin = producer->input;
-	}
 	if (producer->error)
 		thread_stderr = producer->error;
 	free(producer->commands);
@@ -811,18 +809,6 @@ expredir(union node *n)
  */
 #if TARGET_OS_IPHONE
 extern void ios_IsMainThread(int value);
-extern void ios_storeThreadIdForPid(pid_t pid, pthread_t thread);
-
-static int
-wait_pipeline_consumer(pid_t pid)
-{
-	if (ios_getThreadId(pid) == (pthread_t)-1) {
-		ios_storeThreadIdForPid(pid, NULL);
-		return 1;
-	}
-	ios_waitpid(pid);
-	return 0;
-}
 #endif
 
 STATIC int
@@ -895,14 +881,8 @@ evalpipe(union node *n, int flags)
 	// Keep the stream ordering, start commands in order, wait for the last one to end.
 	ios_IsMainThread(0);
 	int interactiveStatusBefore = ios_storeInteractive(); // store interactive status.
-	struct pipeline_producer *consumer = calloc(1, sizeof(*consumer));
-	if (!consumer) {
-		free(lplist);
-		sh_error("Out of memory");
-	}
 	int pid = ios_fork();
 	int previous = socket_foreground_pid(pid);
-	int last_status = 0, consumer_retired = 0;
 	volatile int pending_write = -1;
 	struct jmploc frame;
 	struct jmploc *saved_handler = handler;
@@ -912,57 +892,31 @@ evalpipe(union node *n, int flags)
 			if (pipe(pip) < 0) {
 				sh_error("Pipe call failed");
 			}
-			/* Inline producers handle EPIPE at their local unwind boundary. */
-			if (fcntl(pip[1], F_SETNOSIGPIPE, 1) < 0) {
-				close(pip[0]);
-				close(pip[1]);
-				sh_error("Cannot suppress pipe signal");
-			}
 			pending_write = pip[1];
 			// Create stdin for the command:
 			ios_dup2(pip[0], STDIN_FILENO); // sets child_stdin
-			/* Inline builtins own their pipe across expansion and redirects;
-			 * native consumers still transfer pending streams to ios_system. */
-			union node *command = lplist[j]->n;
-			struct cmdentry entry;
-			if (command->type == NCMD && command->ncmd.args &&
-			    goodname(command->ncmd.args->narg.text)) {
-				find_command(command->ncmd.args->narg.text, &entry, 0, pathval());
-				if (entry.cmdtype == CMDBUILTIN &&
-				    entry.u.cmd != COMMANDCMD && entry.u.cmd != EXECCMD) {
-					consumer->previous_output = pipeline_stdout;
-					ios_activateChildStreams(&consumer->input, &consumer->output, &consumer->error);
-				}
-			}
 			evaltree(lplist[j]->n, flags | EV_NOFORK); // starts command with child_stdin -> thread_stdin
-			if (j == pipelen - 1)
-				last_status = exitstatus;
-			if (consumer->input || consumer->output || consumer->error) {
-				finish_pipeline_producer(consumer);
-				memset(consumer, 0, sizeof(*consumer));
-			}
 			// Create stdout for the next command:
 			ios_dup2(pip[1], STDOUT_FILENO);
 			pending_write = -1;
 		}
-
 		eval_pipeline_producer(lplist, flags);
 		// Now wait for the last command at the end of the pipe to finish:
-		consumer_retired = wait_pipeline_consumer(pid);
+		ios_waitpid(pid);
 	} else {
 		int saved_status = exitstatus;
 		struct pipeline_producer pending = { .previous_output = pipeline_stdout };
 		handler = saved_handler;
-		if (consumer->input || consumer->output || consumer->error)
-			finish_pipeline_producer(consumer);
-		free(consumer);
-		/* The producer cleanup publishes EOF before throwing. Retire any
-		 * pending write stream left by consumer setup before waiting too. */
+		/* Publish EOF before waiting for a started native consumer. Restore the
+		 * pane's cancellation target and mode only after that consumer exits. */
 		ios_activateChildStreams(&pending.input, &pending.output, &pending.error);
+		if (pending.input)
+			fclose(thread_stdin);
 		finish_pipeline_producer(&pending);
 		if (pending_write >= 0)
 			close(pending_write);
-		wait_pipeline_consumer(pid);
+		if (ios_getThreadId(pid) != (pthread_t)-1)
+			ios_waitpid(pid);
 		exitstatus = saved_status;
 		socket_foreground_pid(previous);
 		if (interactiveStatusBefore)
@@ -971,16 +925,14 @@ evalpipe(union node *n, int flags)
 			ios_stopInteractive();
 		longjmp(saved_handler->loc, 1);
 	}
-	free(consumer);
 	handler = saved_handler;
-	/* Pipeline errors must restore the enclosing cancellation target too. */
 	socket_foreground_pid(previous);
 	// restore "interactive" status
 	if (interactiveStatusBefore) 
 		ios_startInteractive(); 
 	else
 		ios_stopInteractive(); 
-	status = consumer_retired ? last_status : ios_getCommandStatus();
+	status = ios_getCommandStatus();
 #endif
 	return status;
 }
@@ -1391,12 +1343,6 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 	struct jmploc jmploc;
 	int status;
 	int i;
-#if TARGET_OS_IPHONE
-	FILE *volatile old_stdin = NULL, *volatile old_stdout = NULL, *volatile old_stderr = NULL;
-	FILE *borrowed_stdin = thread_stdin;
-	FILE *borrowed_stdout = thread_stdout;
-	FILE *borrowed_stderr = thread_stderr;
-#endif
 
 	savecmdname = commandname;
 	savehandler = handler;
@@ -1412,14 +1358,43 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 		status = evalcmd(argc, argv, flags);
 	else {
 #if TARGET_OS_IPHONE
-		FILE *input = NULL, *output = NULL, *error = NULL;
-		ios_activateChildStreams(&input, &output, &error);
-		old_stdin = input;
-		old_stdout = output;
-		old_stderr = error;
+		FILE *old_stdin, *old_stdout, *old_stderr;
+		FILE *borrowed_stdin = thread_stdin;
+		FILE *borrowed_stdout = thread_stdout;
+		FILE *borrowed_stderr = thread_stderr;
+		old_stdin = NULL; 
+		old_stdout = NULL; 
+		old_stderr = NULL; 
+		ios_activateChildStreams(&old_stdin, &old_stdout, &old_stderr);
 #endif
 		status = (*cmd->builtin)(argc, argv);
-
+#if TARGET_OS_IPHONE
+		if (old_stdin != NULL) {
+			fflush(thread_stdin);
+			thread_stdin = old_stdin;
+		}
+		if (old_stderr != NULL) {
+			if (thread_stderr != thread_stdout && thread_stderr != borrowed_stdin &&
+					thread_stderr != borrowed_stdout && thread_stderr != borrowed_stderr) {
+				// Avoid closing ourselves (it can happen)
+				if (fileno(old_stderr) != fileno(thread_stderr)) {
+					fflush(thread_stderr); 
+					fclose(thread_stderr); 
+				}
+			}
+			thread_stderr = old_stderr;
+		}
+		if (old_stdout != NULL) {
+			fflush(thread_stdout);
+			if (thread_stdout != borrowed_stdin && thread_stdout != borrowed_stdout &&
+					thread_stdout != borrowed_stderr)
+				// Avoid closing ourselves (it can happen)
+				if (fileno(thread_stdout) != fileno(old_stdout)) {
+					fclose(thread_stdout);
+				}
+			thread_stdout = old_stdout;
+		}
+#endif
 	}
 	flushall();
 	if (outerr(out1))
@@ -1427,35 +1402,6 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 	status |= outerr(out1);
 	exitstatus = status;
 cmddone:
-#if TARGET_OS_IPHONE
-	if (old_stdin != NULL) {
-		if (thread_stdin != borrowed_stdin && thread_stdin != borrowed_stdout &&
-				thread_stdin != borrowed_stderr)
-			fclose(thread_stdin);
-		thread_stdin = old_stdin;
-	}
-	if (old_stderr != NULL) {
-		if (thread_stderr != thread_stdout && thread_stderr != borrowed_stdin &&
-				thread_stderr != borrowed_stdout && thread_stderr != borrowed_stderr) {
-			// Avoid closing ourselves (it can happen)
-			if (fileno(old_stderr) != fileno(thread_stderr)) {
-				fflush(thread_stderr);
-				fclose(thread_stderr);
-			}
-		}
-		thread_stderr = old_stderr;
-	}
-	if (old_stdout != NULL) {
-		fflush(thread_stdout);
-		if (thread_stdout != borrowed_stdin && thread_stdout != borrowed_stdout &&
-				thread_stdout != borrowed_stderr)
-			// Avoid closing ourselves (it can happen)
-			if (fileno(thread_stdout) != fileno(old_stdout)) {
-				fclose(thread_stdout);
-			}
-		thread_stdout = old_stdout;
-	}
-#endif
 	freestdout();
 	commandname = savecmdname;
 	handler = savehandler;

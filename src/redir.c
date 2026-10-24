@@ -289,16 +289,6 @@ dupredirect(redir, f)
 			else if (f == 1) f = fileno(thread_stdout);
 			else if (f == 2) f = fileno(thread_stderr);
 #endif
-#if TARGET_OS_IPHONE
-			/* An input FILE owns its descriptor; <&N must borrow through a dup. */
-			if (fd == 0 && redir->nfile.type == NFROMFD) {
-				f = dup(f);
-				if (f < 0) {
-					err = errno;
-					goto err;
-				}
-			}
-#endif
 #ifdef notyet
 			if (memory[f])
 				memory[fd] = 1;

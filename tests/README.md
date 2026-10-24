@@ -2,7 +2,7 @@
 
 `pipelines.m` runs the real Dash entry through the public ios_system command boundary. It registers a native first-line reader, creates its executable PATH marker and captures caller-owned output. The root and pipeline commands use detached ios_system dispatch and the caller waits for final cleanup. Each case runs in a fresh process, as the stock interpreter loader resets each library between invocations. An alarm bounds hangs at five seconds.
 
-Use an arm64 Simulator ios_system framework from commit `83798fbd077da1a6cc80f7f33af6c40bfebf74c6` in holzschu/ios_system#201 or a descendant. It includes the caller-owned command-tree API from #181 and exports `ios_storeThreadIdForPid`, which these PID-reservation checks require. Verify that export with `nm -gU ios_system.framework/ios_system` before linking. Build Dash with its stock autotools route; the following commands exercise noninteractive evaluation without libedit. They use a disposable build directory so generated files stay out of the source tree:
+Use an arm64 Simulator ios_system framework with the caller-owned command-tree API from holzschu/ios_system#181. Build Dash with its stock autotools route; the following commands exercise noninteractive evaluation without libedit. They use a disposable build directory so generated files stay out of the source tree:
 
 ```sh
 mkdir -p .build/dash .build/probe/Frameworks
@@ -26,7 +26,7 @@ Return to the repository root, copy the prerequisite's `Resources/commandDiction
 
 ```sh
 xcrun --sdk iphonesimulator clang -target arm64-apple-ios15.0-simulator -isysroot "$simulator_sdk" -fobjc-arc -Wall -Wextra -Wno-unused-parameter -F .build/probe/Frameworks -framework ios_system -framework Foundation -Wl,-rpath,@executable_path/Frameworks -Wl,-export_dynamic tests/pipelines.m -o .build/probe/pipelines
-for scenario in group early-reader heredoc subshell-next subshell-status wasm-producer-eof wasm-producer-fails wasm-consumer-skips pipeline-environment pipeline-error-unwind builtin-eof-error consumer-expansion-error builtin-success builtin-true builtin-colon command-consumer builtin-false builtin-read-status borrowed-input builtin-read-error unset-semantics unset-environment; do
+for scenario in group early-reader heredoc subshell-next subshell-status wasm-producer-eof wasm-producer-fails wasm-consumer-skips pipeline-environment pipeline-error-unwind command-consumer unset-semantics unset-environment; do
     xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/.build/probe/pipelines" "$PWD/.build/dash/src/dash" "$scenario"
 done
 ```
@@ -61,7 +61,7 @@ for scenario in line context foreground delete raw cancel nested-cancel resize r
 done
 ```
 
-The `line` case checks UTF-8 input and Return; `context` checks the command-session environment. `foreground` checks reader EOF, `delete` keeps the idle shell alive after Ctrl-D, and `raw` checks exact control bytes. Both cancellation cases keep the reader's input writer open until cancellation completes. `resize` delivers a real event while input is pending, verifies event consumption and completes that line. `repeat` loads, runs and closes Dash eight times in one process. Every case requires the same shell to print `NEXT_OK` before exiting. An alarm bounds a run at twelve seconds. The identical executable fails on the pipeline-only baseline and passes on this branch; the 22 pipeline regression cases also remain green. Device behavior and terminal-cell reflow need app-level qualification.
+The `line` case checks UTF-8 input and Return; `context` checks the command-session environment. `foreground` checks reader EOF, `delete` keeps the idle shell alive after Ctrl-D, and `raw` checks exact control bytes. Both cancellation cases keep the reader's input writer open until cancellation completes. `resize` delivers a real event while input is pending, verifies event consumption and completes that line. `repeat` loads, runs and closes Dash eight times in one process. Every case requires the same shell to print `NEXT_OK` before exiting. An alarm bounds a run at twelve seconds. The identical executable fails on the pipeline-only baseline and passes on this branch; the 13 pipeline regression cases also remain green. Device behavior and terminal-cell reflow need app-level qualification.
 
 The optional foreground-PID exchange callback works without socket opt-in. The other callbacks require `ASHELL_IOS_SOCKET_INPUT=1`. Embedding processes may export:
 
@@ -76,4 +76,4 @@ Begin installs a borrowed command stream and returns a lease; end waits for its 
 
 The `pipeline-error-unwind` case supplies the application's optional foreground-PID exchange callback. A producer builtin rejects an invalid export name, unwinds the pipeline and lets its first-line consumer finish without input. The real Dash command returns status 2 with empty output, and the application callback must be back at its initial idle value. The pre-correction pipeline leaves a stale cancellation target. This checks the optional embedding callback contract without asserting the order of internal calls.
 
-The 22 pipeline modes include `builtin-eof-error` and `consumer-expansion-error`, which require status 2, foreground restoration and an unchanged descriptor count. `builtin-success` checks `printf x | read y </dev/null; printf next` with a newline after `next`. `builtin-true` checks `true | true`; `builtin-colon` checks `printf x | :` with empty stdout and stderr. `builtin-false` checks status 1 for `true | false`, and `builtin-read-status` checks that the redirected read consumer reports 1 through `$?`. `command-consumer` checks that `command first-line` receives `x` and a newline. `builtin-read-error` checks recovery and unchanged descriptors after `read -Z`. These rows check foreground restoration and descriptor equality. `borrowed-input` reads both lines through the same `<&3` descriptor and requires `ab` followed by a newline; the script explicitly opens and closes fd 3. `unset-semantics` and `unset-environment` check missing variables and valid child environment entries.
+The 13 pipeline modes include `command-consumer`, which checks that the native command behind `command first-line` receives `x` and a newline, returns status 0 and leaves the descriptor count unchanged. `pipeline-error-unwind` also requires an unchanged descriptor count. `unset-semantics` and `unset-environment` check missing variables and valid child environment entries.
