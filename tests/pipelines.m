@@ -166,10 +166,14 @@ int main(int argc, char **argv) {
             expected = "private\nprivate\nouter\ninner\nouter\nouter\npipe\nouter\n";
         } else if (!strcmp(argv[2], "command-consumer")) {
             script = "printf 'x\\n' | command first-line"; expected = "x\n";
+        } else if (!strcmp(argv[2], "pipeline-error-next")) {
+            script = "export 1bad=value | first-line; printf 'next\\n'";
+            expected = "";
+            expectedStatus = 1;
         } else if (!strcmp(argv[2], "pipeline-error-unwind")) {
             script = "export 1bad=value | first-line";
             expected = "";
-            expectedStatus = 2;
+            expectedStatus = 1;
         } else return 2;
         initializeEnvironment();
         ios_switchSession("pipeline-regression");
@@ -188,9 +192,6 @@ int main(int argc, char **argv) {
         marker = fopen(markerPath, "w");
         if (!marker || fclose(marker) || chmod(markerPath, 0755)) return 2;
         ios_setenv("PATH", markerDirectory, 1);
-        char dataPath[PATH_MAX];
-        snprintf(dataPath,sizeof(dataPath),"%s/data",markerDirectory);
-        ios_setenv("PIPELINE_FILE",dataPath,1);
         FILE *input = tmpfile(), *output = tmpfile(), *error = tmpfile();
         if (!input || !output || !error) return 2;
         void *registration = NULL;
@@ -216,7 +217,7 @@ int main(int argc, char **argv) {
         char actual[64] = {0};
         size_t length = fread(actual, 1, sizeof(actual) - 1, output);
         BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus && foregroundPID == 0;
-        if (!strcmp(argv[2], "command-consumer") || !strcmp(argv[2], "pipeline-error-unwind")) {
+        if (!strcmp(argv[2], "command-consumer") || !strncmp(argv[2], "pipeline-error-", 15)) {
             dprintf(2,"pipeline descriptors before=%d after=%d %s\n",descriptorsBefore,descriptorsAfter,descriptorsBefore==descriptorsAfter?"PASS":"FAIL");
             passed=passed&&descriptorsBefore==descriptorsAfter;
         }
@@ -224,7 +225,7 @@ int main(int argc, char **argv) {
         if (fclose(input) || fclose(output) || fclose(error)) return 1;
         alarm(0);
         dprintf(STDERR_FILENO, "Dash %s: status=%d bytes=%zu %s\n", argv[2], status, length, passed ? "PASS" : "FAIL");
-        if (!strcmp(argv[2], "pipeline-error-unwind"))
+        if (!strncmp(argv[2], "pipeline-error-", 15))
             dprintf(STDERR_FILENO, "Foreground idle after pipeline error: %s\n", foregroundPID == 0 ? "PASS" : "FAIL");
         dlclose(library);
         unlink(markerPath);
@@ -232,7 +233,6 @@ int main(int argc, char **argv) {
         unlink(markerPath);
         snprintf(markerPath, sizeof(markerPath), "%s/first-line", markerDirectory);
         unlink(markerPath);
-        unlink(dataPath);
         rmdir(markerDirectory);
         return passed ? 0 : 1;
     }

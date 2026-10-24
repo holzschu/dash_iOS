@@ -884,6 +884,7 @@ evalpipe(union node *n, int flags)
 	int pid = ios_fork();
 	int previous = socket_foreground_pid(pid);
 	volatile int pending_write = -1;
+	volatile int evaluating_producer = 0;
 	struct jmploc frame;
 	struct jmploc *saved_handler = handler;
 	if (!setjmp(frame.loc)) {
@@ -900,11 +901,13 @@ evalpipe(union node *n, int flags)
 			ios_dup2(pip[1], STDOUT_FILENO);
 			pending_write = -1;
 		}
+		evaluating_producer = 1;
 		eval_pipeline_producer(lplist, flags);
 		// Now wait for the last command at the end of the pipe to finish:
 		ios_waitpid(pid);
 	} else {
 		int saved_status = exitstatus;
+		int producer_error = evaluating_producer && exception == EXERROR;
 		struct pipeline_producer pending = { .previous_output = pipeline_stdout };
 		handler = saved_handler;
 		/* Publish EOF before waiting for a started native consumer. Restore the
@@ -917,7 +920,8 @@ evalpipe(union node *n, int flags)
 			close(pending_write);
 		if (ios_getThreadId(pid) != (pthread_t)-1)
 			ios_waitpid(pid);
-		exitstatus = saved_status;
+		/* Keep stock last-consumer status and list abort for producer errors. */
+		exitstatus = producer_error ? ios_getCommandStatus() : saved_status;
 		socket_foreground_pid(previous);
 		if (interactiveStatusBefore)
 			ios_startInteractive();
