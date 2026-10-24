@@ -67,6 +67,7 @@
 #endif
 #if TARGET_OS_IPHONE
 #include "ios_error.h"
+#include <dlfcn.h>
 #define EV_NOFORK 4 /* don't wait after starting a command -- required for pipes */
 #include <fcntl.h>
 extern void	setpwd(const char *, int);
@@ -221,6 +222,102 @@ evalstring(char *s, int flags)
 
 
 
+#if TARGET_OS_IPHONE
+/* The worker owns command stdin; Dash owns evaluation and error unwinding.
+ * Resolve the optional ABI only in socket panes. Ordinary a-Shell evaluation
+ * and explicit redirections retain their existing paths.
+ */
+/* Each stock interpreter slot has one active command. TLS would pin this
+ * dylib in dyld and break the stock unload/reset between invocations.
+ */
+static unsigned socket_background_input;
+
+static int
+socket_eval_input(int (*evaluate)(union node *, int), union node *n, int flags)
+{
+	const char *socket_input = getenv("ASHELL_IOS_SOCKET_INPUT");
+	int (*begin)(FILE **, void **);
+	int (*finish)(void *);
+	struct jmploc frame;
+	struct jmploc *saved_handler;
+	FILE *saved_input;
+	void *lease = NULL;
+	unsigned background;
+	int error, raised, status;
+
+	if (!socket_input || strcmp(socket_input, "1"))
+		return evaluate(n, flags);
+	begin = dlsym(RTLD_DEFAULT, "ashell_pane_begin_foreground_input");
+	finish = dlsym(RTLD_DEFAULT, "ashell_pane_end_foreground_input");
+	if (!begin || !finish)
+		return evaluate(n, flags);
+
+	background = socket_background_input;
+	if (n->type == NBACKGND || (n->type == NPIPE && n->npipe.backgnd))
+		socket_background_input++;
+	saved_input = thread_stdin;
+	if (!socket_background_input && !(flags & EV_NOFORK) &&
+	    (n->type == NCMD || n->type == NPIPE)) {
+		error = begin(&thread_stdin, &lease);
+		if (error) {
+			socket_background_input = background;
+			sh_error("cannot prepare pane command input: %s", strerror(error));
+		}
+	}
+
+	/* All shell exceptions, including builtin read/eval and failed redirects,
+	 * must retire the lease before the caller's existing handler runs.
+	 */
+	saved_handler = handler;
+	raised = setjmp(frame.loc);
+	if (!raised) {
+		handler = &frame;
+		status = evaluate(n, flags);
+	}
+	handler = saved_handler;
+	socket_background_input = background;
+	if (lease) {
+		thread_stdin = saved_input;
+		error = finish(lease);
+	} else {
+		error = 0;
+	}
+	if (raised)
+		longjmp(saved_handler->loc, raised);
+	if (error)
+		sh_error("cannot retire pane command input: %s", strerror(error));
+	return status;
+}
+
+/* Publish before dispatch: a nested shell can start its own child before
+ * ios_execve returns. Negative PIDs identify shell waiters, never targets.
+ */
+static int
+socket_foreground_pid(int pid)
+{
+	int (*exchange)(int);
+	/* The main terminal also needs the job PID to route Ctrl-C. */
+	exchange = dlsym(RTLD_DEFAULT, "ashell_pane_exchange_foreground_pid");
+	return exchange ? exchange(pid) : 0;
+}
+
+static void
+socket_exec_command(char **argv, char **envp)
+{
+	int pid = ios_fork();
+	const char *name = strrchr(argv[0], '/');
+	int previous;
+	name = name ? name + 1 : argv[0];
+	previous = socket_foreground_pid(!strcmp(name, "dash") || !strcmp(name, "sh") ? -pid : pid);
+	if (envp)
+		ios_execve(argv[0], argv, envp);
+	else
+		ios_execv(argv[0], argv);
+	ios_waitpid(pid);
+	socket_foreground_pid(previous);
+}
+#endif
+
 /*
  * Evaluate a parse tree.  The value is left in the global variable
  * exitstatus.
@@ -323,6 +420,11 @@ checkexit:
 evaln:
 		evalfn = evaltree;
 calleval:
+#if TARGET_OS_IPHONE
+		if (n->type == NCMD || n->type == NPIPE || n->type == NBACKGND)
+			status = socket_eval_input(evalfn, n, flags);
+		else
+#endif
 		status = evalfn(n, flags);
 		goto setstatus;
 	case NIF:
@@ -780,19 +882,55 @@ evalpipe(union node *n, int flags)
 	ios_IsMainThread(0);
 	int interactiveStatusBefore = ios_storeInteractive(); // store interactive status.
 	int pid = ios_fork();
-	for (int j = pipelen - 1; j >= 1; j--) {
-		if (pipe(pip) < 0) {
-			sh_error("Pipe call failed");
+	int previous = socket_foreground_pid(pid);
+	volatile int pending_write = -1;
+	volatile int evaluating_producer = 0;
+	struct jmploc frame;
+	struct jmploc *saved_handler = handler;
+	if (!setjmp(frame.loc)) {
+		handler = &frame;
+		for (int j = pipelen - 1; j >= 1; j--) {
+			if (pipe(pip) < 0) {
+				sh_error("Pipe call failed");
+			}
+			pending_write = pip[1];
+			// Create stdin for the command:
+			ios_dup2(pip[0], STDIN_FILENO); // sets child_stdin
+			evaltree(lplist[j]->n, flags | EV_NOFORK); // starts command with child_stdin -> thread_stdin
+			// Create stdout for the next command:
+			ios_dup2(pip[1], STDOUT_FILENO);
+			pending_write = -1;
 		}
-		// Create stdin for the command:
-		ios_dup2(pip[0], STDIN_FILENO); // sets child_stdin
-		evaltree(lplist[j]->n, flags | EV_NOFORK); // starts command with child_stdin -> thread_stdin
-		// Create stdout for the next command:
-		ios_dup2(pip[1], STDOUT_FILENO);
+		evaluating_producer = 1;
+		eval_pipeline_producer(lplist, flags);
+		// Now wait for the last command at the end of the pipe to finish:
+		ios_waitpid(pid);
+	} else {
+		int saved_status = exitstatus;
+		int producer_error = evaluating_producer && exception == EXERROR;
+		struct pipeline_producer pending = { .previous_output = pipeline_stdout };
+		handler = saved_handler;
+		/* Publish EOF before waiting for a started native consumer. Restore the
+		 * pane's cancellation target and mode only after that consumer exits. */
+		ios_activateChildStreams(&pending.input, &pending.output, &pending.error);
+		if (pending.input)
+			fclose(thread_stdin);
+		finish_pipeline_producer(&pending);
+		if (pending_write >= 0)
+			close(pending_write);
+		if (ios_getThreadId(pid) != (pthread_t)-1)
+			ios_waitpid(pid);
+		/* Report the waited consumer status, matching the measured baseline. */
+		exitstatus = producer_error ? ios_getCommandStatus() : saved_status;
+		socket_foreground_pid(previous);
+		if (interactiveStatusBefore)
+			ios_startInteractive();
+		else
+			ios_stopInteractive();
+		longjmp(saved_handler->loc, 1);
 	}
-	eval_pipeline_producer(lplist, flags);
-	// Now wait for the last command at the end of the pipe to finish:
-	ios_waitpid(pid); 
+	handler = saved_handler;
+	socket_foreground_pid(previous);
 	// restore "interactive" status
 	if (interactiveStatusBefore) 
 		ios_startInteractive(); 
@@ -1129,12 +1267,9 @@ bail:
 		if (!(flags & EV_NOFORK)) {
 			int interactiveStatusBefore = ios_storeInteractive(); 
 			int stdinFlagsBefore = fcntl(fileno(thread_stdin), F_GETFL);
-			int pid = ios_fork();
-			char** localEnvironment = listvars(0,0,NULL);
-			// pass the env variables to exec (including local vars)
-			// this is so "var=name ./scriptname" works
-			ios_execve(argv[0], argv, localEnvironment);
-			ios_waitpid(pid);
+			char** localEnvironment = listvars(0,VUNSET,NULL);
+			// Pass shell variables and command-prefix assignments.
+			socket_exec_command(argv, localEnvironment);
 			// store the result of executing the command:
 			exitstatus = ios_getCommandStatus(); 
 			// if the user started an interactive command (Vim), tell ios_system to handle key events again:
@@ -1142,7 +1277,7 @@ bail:
 				ios_startInteractive(); 
 			else
 				ios_stopInteractive(); 
-			// free the list allocated by listvars 
+			// Free the list allocated by listvars
 			stunalloc(localEnvironment);
 			// reset stdin to non-blocking:
 			fcntl(fileno(thread_stdin), F_SETFL, stdinFlagsBefore);
@@ -1150,8 +1285,9 @@ bail:
 			setpwd(NULL, 0);
 			break;
 		} else {
-			// no execve here because without fork we share the same environment
-			ios_execv(argv[0], argv);
+			char** localEnvironment = listvars(0,VUNSET,NULL);
+			ios_execve(argv[0], argv, localEnvironment);
+			stunalloc(localEnvironment);
 			break;
 		}
 		if (argv_0 != NULL) {
@@ -1438,9 +1574,7 @@ execcmd(int argc, char **argv)
 		optschanged();
 #if TARGET_OS_IPHONE
 		int interactiveStatusBefore = ios_storeInteractive();
-		int pid = ios_fork();
-		ios_execv(argv[1], argv+1);
-		ios_waitpid(pid);
+		socket_exec_command(argv + 1, NULL);
 		if (interactiveStatusBefore) 
 			ios_startInteractive(); 
 		else

@@ -57,6 +57,8 @@
 #include "memalloc.h"
 #if TARGET_OS_IPHONE
 #include "ios_error.h"
+#include "trap.h"
+#include <dlfcn.h>
 #define isatty ios_isatty
 #undef _PATH_TMP
 #define _PATH_TMP getenv("TMPDIR")
@@ -69,6 +71,67 @@ History *hist;	/* history cookie */
 EditLine *el;	/* editline cookie */
 int displayhist;
 static FILE *el_in, *el_out;
+
+#if TARGET_OS_IPHONE
+/* a-Shell treats Ctrl-D at its idle prompt as Delete, never shell EOF. */
+static unsigned char
+socket_delete_next(EditLine *line, int ch)
+{
+	const LineInfoW *input = el_wline(line);
+	(void)ch;
+	if (!input)
+		return CC_ERROR;
+	if (input->cursor == input->lastchar)
+		return CC_NORM;
+	(void)el_cursor(line, 1);
+	el_deletestr(line, 1);
+	return CC_REFRESH;
+}
+
+/* Socket panes have no kernel ICRNL. Convert Return only while Dash reads a
+ * command line through libedit; child commands retain their original raw fd.
+ * Delegate Unicode decoding to libedit's builtin wide-character reader.
+ */
+static int
+socket_getc(EditLine *line, wchar_t *ch)
+{
+	int count;
+	int (*wait_input)(FILE *);
+
+retry:
+	wait_input = dlsym(RTLD_DEFAULT, "ashell_pane_wait_editor_input");
+	while (wait_input) {
+		int ready = wait_input(thread_stdin);
+		if (ready < 0) {
+			errno = -ready;
+			return -1;
+		}
+		if (!ready)
+			break;
+		el_resize(line);
+		if (ready == 1)
+			break;
+	}
+	if (el_wset(line, EL_GETCFN, EL_BUILTIN_GETCFN) != 0)
+		return -1;
+	count = el_wgetc(line, ch);
+	if (el_wset(line, EL_GETCFN, socket_getc) != 0)
+		return -1;
+	if (count == 1 && *ch == L'\003') {
+		/* No tty driver delivers VINTR on a socket. Dispatch SIGINT on
+		 * this shell's editor thread, using its own trap/unwind machinery.
+		 * Process-global handlers can belong to another interpreter slot.
+		 */
+		el_reset(line);
+		onsig(SIGINT);
+		dotrap();
+		goto retry;
+	}
+	if (count == 1 && *ch == L'\r')
+		*ch = L'\n';
+	return count;
+}
+#endif
 
 STATIC const char *fc_replace(const char *, char *, char *);
 
@@ -107,7 +170,11 @@ histedit(void)
 			else
 				out2str("sh: can't initialize history\n");
 		}
-		if (editing && !el && isatty(0)) { /* && isatty(2) ??? */
+		if (editing && !el && (isatty(0)
+#if TARGET_OS_IPHONE
+		    || (getenv("ASHELL_IOS_SOCKET_INPUT") && !strcmp(getenv("ASHELL_IOS_SOCKET_INPUT"), "1"))
+#endif
+		)) { /* && isatty(2) ??? */
 			/*
 			 * turn editing on
 			 */
@@ -132,9 +199,31 @@ histedit(void)
 #endif
 			el = el_init(arg0, el_in, el_out, el_err);
 			if (el != NULL) {
+#if TARGET_OS_IPHONE
+				const char *socket_input = getenv("ASHELL_IOS_SOCKET_INPUT");
+				if (socket_input && socket_input[0] == '1' && socket_input[1] == '\0') {
+					/* The embedded shell must not own process-global libedit signals. */
+					el_set(el, EL_SIGNAL, 0);
+					if (el_wset(el, EL_GETENV, getenv) != 0)
+						sh_error("cannot configure socket editor environment");
+					const char *cols = getenv("COLUMNS"), *rows = getenv("LINES");
+					if (cols && el_set(el, EL_SETTC, "co", cols, NULL) != 0)
+						sh_error("cannot configure socket editor columns");
+					if (rows && el_set(el, EL_SETTC, "li", rows, NULL) != 0)
+						sh_error("cannot configure socket editor rows");
+					if (el_wset(el, EL_GETCFN, socket_getc) != 0)
+						sh_error("cannot configure socket line reader");
+					if (el_set(el, EL_ADDFN, "socket-delete-next", "Delete character after cursor", socket_delete_next) != 0)
+						sh_error("cannot configure socket prompt Delete key");
+				}
+#endif
 				if (hist)
 					el_set(el, EL_HIST, history, hist);
+#if TARGET_OS_IPHONE
+				el_set(el, EL_PROMPT_ESC, getprompt, '\001');
+#else
 				el_set(el, EL_PROMPT, getprompt);
+#endif
 			} else {
 bad:
 				out2str("sh: can't initialize editing\n");
@@ -152,6 +241,15 @@ bad:
 			else if (Eflag)
 				el_set(el, EL_EDITOR, "emacs");
 			el_source(el, NULL);
+#if TARGET_OS_IPHONE
+			/* Editor selection and editrc can reset the keymap after el_init. */
+			const char *socket_input = getenv("ASHELL_IOS_SOCKET_INPUT");
+			if (socket_input && !strcmp(socket_input, "1")) {
+				if (el_set(el, EL_BIND, "^D", "socket-delete-next", NULL) != 0 ||
+				    el_set(el, EL_BIND, "-a", "^D", "socket-delete-next", NULL) != 0)
+					sh_error("cannot configure socket prompt Delete key");
+			}
+#endif
 		}
 	} else {
 		INTOFF;

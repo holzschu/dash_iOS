@@ -1562,10 +1562,12 @@ setprompt(int which)
 	show = !el;
 #endif
 #if TARGET_OS_IPHONE
-	// on iOS, el doesn't print the prompt, so we do it:
-	pushstackmark(&smark, stackblocksize());
-	out2str(getprompt(NULL));
-	popstackmark(&smark);
+	/* The editor owns its prompt; print explicitly without an editor. */
+	if (show) {
+		pushstackmark(&smark, stackblocksize());
+		out2str(getprompt(NULL));
+		popstackmark(&smark);
+	}
 #else
 	if (show) {
 		pushstackmark(&smark, stackblocksize());
