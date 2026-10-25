@@ -286,11 +286,9 @@ dupredirect(redir, f)
 		if (f >= 0) {
 #if TARGET_OS_IPHONE
 			int owned = 0;
-			if (fd > 2 && f <= 2) {
-				if (f == 0) f = fileno(thread_stdin);
-				else if (f == 1) f = fileno(thread_stdout);
-				else f = fileno(thread_stderr);
-			}
+			if (f == 0) f = fileno(thread_stdin);
+			else if (f == 1) f = fileno(thread_stdout);
+			else if (f == 2) f = fileno(thread_stderr);
 			if (fd <= 2 && f > 2) {
 				int g = fcntl(f, F_DUPFD_CLOEXEC, 10);
 				if (g < 0) {

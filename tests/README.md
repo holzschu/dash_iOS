@@ -41,10 +41,12 @@ The `wasm-*` cases register a stand-in `wasm` command that stacks its call and b
 
 `stdout-alias` redirects a command group's descriptor 9 from the caller's stdout, then writes through it. It checks that the bytes reach the caller's output stream and that the original descriptor is restored. Without mapping the source descriptor to the thread-local stream, the output goes to the process stdout and the case fails.
 
+`stderr-dup` writes through `>&2` and checks exact caller stderr and empty stdout. Without the thread-local source mapping, the output goes to process stderr and builtin cleanup closes that process descriptor.
+
 Build as for `pipelines.m`, replacing the source and executable name with `input-lifetime.m` and `input-lifetime`. Run each case in a fresh process:
 
 ```sh
-for scenario in borrowed script stdout-alias; do
+for scenario in borrowed script stdout-alias stderr-dup; do
     xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/.build/probe/input-lifetime" "$PWD/.build/dash/src/dash" "$scenario"
 done
 ```
