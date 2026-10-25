@@ -23,9 +23,11 @@ int main(int argc, char **argv) {
         void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
         if (!library || !(shellMain = dlsym(library, "main"))) return 2;
         BOOL scriptMode = !strcmp(argv[2], "script");
-        if (!scriptMode && strcmp(argv[2], "borrowed")) return 2;
+        BOOL aliasMode = !strcmp(argv[2], "stdout-alias");
+        if (!scriptMode && !aliasMode && strcmp(argv[2], "borrowed")) return 2;
         NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
         NSString *script = @"read value; printf 'INPUT=%s\\n' \"$value\"";
+        if (aliasMode) script = @"{ read value; printf 'INPUT=%s\\n' \"$value\" >&9; } 9>&1";
         if (scriptMode && ![script writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL]) return 2;
         initializeEnvironment();
         ios_switchSession("input-lifetime");

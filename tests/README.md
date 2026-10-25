@@ -39,10 +39,12 @@ The `wasm-*` cases register a stand-in `wasm` command that stacks its call and b
 
 `input-lifetime.m` runs Dash through the public ios_system entry with real caller-owned input/output/error streams. The `borrowed` case runs a command string; `script` runs an owned temporary script. Both read caller input, check exact output and empty stderr, compare open descriptor counts, then rewind and read the original input again before closing all three streams.
 
+`stdout-alias` redirects a command group's descriptor 9 from the caller's stdout, then writes through it. It checks that the bytes reach the caller's output stream and that the original descriptor is restored. Without mapping the source descriptor to the thread-local stream, the output goes to the process stdout and the case fails.
+
 Build as for `pipelines.m`, replacing the source and executable name with `input-lifetime.m` and `input-lifetime`. Run each case in a fresh process:
 
 ```sh
-for scenario in borrowed script; do
+for scenario in borrowed script stdout-alias; do
     xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/.build/probe/input-lifetime" "$PWD/.build/dash/src/dash" "$scenario"
 done
 ```
