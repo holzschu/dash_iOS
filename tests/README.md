@@ -49,3 +49,20 @@ xcrun simctl spawn "$SIMULATOR_UDID" "$PROBE/login-profile"
 ```
 
 The iOS login marker must be exported through Dash's variable table so a child inherits it. Login selection must happen after option parsing: noninteractive commands and scripts must not implicitly read the login profile. Removing only the exported Dash variable from the corrected code makes the interactive child reread the profile and exhaust the pool: `completed=0 bytes=66 visits=6 FAIL`, exit 1. With corrected login selection and marker export, it reports `completed=8 bytes=139 visits=8 PASS`, exit 0. This checks arm64 Simulator command behavior; physical-device startup remains a separate check.
+# Input lifetime
+
+`input-lifetime.m` runs Dash through the public ios_system entry with real caller-owned input/output/error streams. The `borrowed` case runs a command string; `script` runs an owned temporary script. Both read caller input, check exact output and empty stderr, compare open descriptor counts, then rewind and read the original input again before closing all three streams.
+
+`stdout-alias` redirects a command group's descriptor 9 from the caller's stdout, then writes through it. It checks that the bytes reach the caller's output stream and that the original descriptor is restored. Without mapping the source descriptor to the thread-local stream, the output goes to the process stdout and the case fails.
+
+`stderr-dup` writes through `>&2` and checks exact caller stderr and empty stdout. Without the thread-local source mapping, the output goes to process stderr and builtin cleanup closes that process descriptor.
+
+Build as for `pipelines.m`, replacing the source and executable name with `input-lifetime.m` and `input-lifetime`. Run each case in a fresh process:
+
+```sh
+for scenario in borrowed script stdout-alias stderr-dup; do
+    xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/.build/probe/input-lifetime" "$PWD/.build/dash/src/dash" "$scenario"
+done
+```
+
+Before the borrowed-input fix, `borrowed` exits 1 with descriptors `8/7` and input close `-1`; `script` remains green with `8/8`. With the fix, both exit 0 with descriptors `8/8`, successful stream closes and `PASS`.
