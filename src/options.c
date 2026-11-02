@@ -177,7 +177,7 @@ setarg0:
 	}
 
 	shellparam.p = xargv;
-	shellparam.optind = 1;
+	shellparam.opt_ind = 1;
 	shellparam.optoff = -1;
 #if TARGET_OS_IPHONE
 	shellparam.nparam = 0;
@@ -334,7 +334,7 @@ setparam(char **argv)
 	shellparam.malloc = 1;
 	shellparam.nparam = nparam;
 	shellparam.p = newparam;
-	shellparam.optind = 1;
+	shellparam.opt_ind = 1;
 	shellparam.optoff = -1;
 }
 
@@ -380,7 +380,7 @@ shiftcmd(int argc, char **argv)
 	}
 	ap2 = shellparam.p;
 	while ((*ap2++ = *ap1++) != NULL);
-	shellparam.optind = 1;
+	shellparam.opt_ind = 1;
 	shellparam.optoff = -1;
 	INTON;
 	return 0;
@@ -412,7 +412,7 @@ void
 getoptsreset(value)
 	const char *value;
 {
-	shellparam.optind = number(value) ?: 1;
+	shellparam.opt_ind = number(value) ?: 1;
 	shellparam.optoff = -1;
 }
 
@@ -432,15 +432,15 @@ getoptscmd(int argc, char **argv)
 		sh_error("Usage: getopts optstring var [arg]");
 	else if (argc == 3) {
 		optbase = shellparam.p;
-		if ((unsigned)shellparam.optind > shellparam.nparam + 1) {
-			shellparam.optind = 1;
+		if ((unsigned)shellparam.opt_ind > shellparam.nparam + 1) {
+			shellparam.opt_ind = 1;
 			shellparam.optoff = -1;
 		}
 	}
 	else {
 		optbase = &argv[3];
-		if ((unsigned)shellparam.optind > argc - 2) {
-			shellparam.optind = 1;
+		if ((unsigned)shellparam.opt_ind > argc - 2) {
+			shellparam.opt_ind = 1;
 			shellparam.optoff = -1;
 		}
 	}
@@ -456,10 +456,10 @@ getopts(char *optstr, char *optvar, char **optfirst)
 	int done = 0;
 	char s[2];
 	char **optnext;
-	int ind = shellparam.optind;
+	int ind = shellparam.opt_ind;
 	int off = shellparam.optoff;
 
-	shellparam.optind = -1;
+	shellparam.opt_ind = -1;
 	optnext = optfirst + ind - 1;
 
 	if (ind <= 1 || off < 0 || strlen(optnext[-1]) < off)
@@ -528,7 +528,7 @@ out:
 	setvar(optvar, s, 0);
 
 	shellparam.optoff = p ? p - *(optnext - 1) : -1;
-	shellparam.optind = ind;
+	shellparam.opt_ind = ind;
 
 	return done;
 }
