@@ -12,6 +12,7 @@ make distclean
 	CXXFLAGS="-arch arm64 -miphoneos-version-min=14.0 -isysroot ${IOS_SDKROOT} -DJOBS=0 -fembed-bitcode -Dstat64=stat -Dlstat64=lstat -Dfstat64=fstat -DUSE_GLIBC_STDIO=1 -DFLUSHERR=1 -I${PWD}" \
 	LDFLAGS="-arch arm64 -miphoneos-version-min=14.0 -isysroot ${IOS_SDKROOT} -DJOBS=0 -fembed-bitcode -dynamiclib -F ${PWD}/ios_system.xcframework/ios-arm64 -framework ios_system" \
 	--build=x86_64-apple-darwin --host=armv8-apple-darwin cross_compiling=yes --with-libedit 
+sed -i bak "s/#define HAVE_STRCHRNUL 1/\/\/&/" config.h
 make -j4 --quiet
 
 for binary in dash dashA dashB dashC dashD dashE
@@ -57,4 +58,8 @@ for framework in dash dashA dashB dashC dashD dashE
 do
    rm -rf $framework.xcframework
    xcodebuild -create-xcframework -framework build/Release-iphoneos/$framework.framework -framework build/Release-iphonesimulator/$framework.framework -output $framework.xcframework
+   # while we're at it, let's compute the checksum:
+   rm -f $framework.xcframework.zip
+   zip -rq $framework.xcframework.zip $framework.xcframework
+   swift package compute-checksum $framework.xcframework.zip
 done
