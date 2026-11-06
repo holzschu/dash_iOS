@@ -8,8 +8,23 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <unistd.h>
+#include <fcntl.h>
+
+static int openDescriptors(void) {
+    int count=0;
+    for(int fd=0;fd<256;fd++)if(fcntl(fd,F_GETFD)>=0)count++;
+    return count;
+}
 
 static int (*shellMain)(int, char **);
+
+// The embedding application owns this optional callback contract.
+static int foregroundPID;
+int ashell_pane_exchange_foreground_pid(int pid) {
+    int previous = foregroundPID;
+    foregroundPID = pid;
+    return previous;
+}
 
 int pipeline_shell_main(int argc, char **argv) {
     return shellMain(argc, argv);
@@ -22,6 +37,21 @@ int pipeline_first_main(int argc, char **argv) {
     int status = length > 0 && fwrite(line, 1, length, thread_stdout) == (size_t)length ? 0 : 1;
     free(line);
     return status;
+}
+
+int pipeline_envprobe_main(int argc, char **argv) {
+    if (argc == 2 && !strcmp(argv[1], "valid")) {
+        char **env = environmentVariables(ios_currentPid());
+        for (; env && *env; env++) {
+            const char *equals = strchr(*env, '=');
+            if (!equals || equals == *env) return 7;
+        }
+        fprintf(thread_stdout, "valid\n");
+        return 0;
+    }
+    const char *value = ios_getenv("FOO");
+    fprintf(thread_stdout, "%s\n", value ? value : "missing");
+    return 0;
 }
 
 // Stand-in for a-Shell's synchronous WebAssembly queue: each `wasm` command is stacked and
@@ -125,6 +155,26 @@ int main(int argc, char **argv) {
         } else if (!strcmp(argv[2], "wasm-consumer-skips")) {
             script = "wasm emit | wasm skip; printf 'next\\n'";
             expected = "next\n";
+        } else if (!strcmp(argv[2], "unset-semantics")) {
+            script = "export FOO=outer; unset FOO; envprobe; printf x | envprobe; exec envprobe";
+            expected = "missing\nmissing\nmissing\n";
+        } else if (!strcmp(argv[2], "unset-environment")) {
+            script = "unset ASHELL_ABSENT; envprobe valid; printf x | envprobe valid; exec envprobe valid";
+            expected = "valid\nvalid\nvalid\n";
+        } else if (!strcmp(argv[2], "pipeline-environment")) {
+            script = "FOO=private; envprobe; printf x | envprobe; export FOO=outer; envprobe; FOO=inner envprobe; envprobe; printf x | envprobe; printf x | FOO=pipe envprobe; envprobe";
+            expected = "private\nprivate\nouter\ninner\nouter\nouter\npipe\nouter\n";
+        } else if (!strcmp(argv[2], "command-consumer")) {
+            script = "printf 'x\\n' | command first-line"; expected = "x\n";
+        } else if (!strcmp(argv[2], "pipeline-error-next")) {
+            // Preserve the dash_iOS baseline list abort deliberately.
+            script = "export 1bad=value | first-line; printf 'next\\n'";
+            expected = "";
+            expectedStatus = 1;
+        } else if (!strcmp(argv[2], "pipeline-error-unwind")) {
+            script = "export 1bad=value | first-line";
+            expected = "";
+            expectedStatus = 1;
         } else return 2;
         initializeEnvironment();
         ios_switchSession("pipeline-regression");
@@ -139,6 +189,9 @@ int main(int argc, char **argv) {
         snprintf(markerPath, sizeof(markerPath), "%s/wasm", markerDirectory);
         marker = fopen(markerPath, "w");
         if (!marker || fclose(marker) || chmod(markerPath, 0755)) return 2;
+        snprintf(markerPath, sizeof(markerPath), "%s/envprobe", markerDirectory);
+        marker = fopen(markerPath, "w");
+        if (!marker || fclose(marker) || chmod(markerPath, 0755)) return 2;
         ios_setenv("PATH", markerDirectory, 1);
         FILE *input = tmpfile(), *output = tmpfile(), *error = tmpfile();
         if (!input || !output || !error) return 2;
@@ -148,25 +201,38 @@ int main(int argc, char **argv) {
         replaceCommand(@"dash", @"pipeline_shell_main", false);
         replaceCommand(@"first-line", @"pipeline_first_main", false);
         replaceCommand(@"wasm", @"pipeline_wasm_main", false);
+        replaceCommand(@"envprobe", @"pipeline_envprobe_main", false);
         // Quote embedded apostrophes for the outer ios_system command parser.
         NSString *quoted = [[NSString stringWithUTF8String:script] stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
         NSString *command = [NSString stringWithFormat:@"dash -c '%@'", quoted];
         joinMainThread = false;
+        int descriptorsBefore = openDescriptors();
         pid_t root = ios_fork();
         ios_system(command.UTF8String);
         ios_waitpid(root);
         ashell_wait_owned_streams(registration);
         int status = ios_getCommandStatus();
+        int descriptorsAfter = openDescriptors();
         ashell_unregister_owned_streams(&registration);
         rewind(output);
         char actual[64] = {0};
         size_t length = fread(actual, 1, sizeof(actual) - 1, output);
-        BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus;
+        BOOL passed = length == strlen(expected) && !strcmp(actual, expected) && status == expectedStatus && foregroundPID == 0;
+        if (!strcmp(argv[2], "command-consumer") || !strncmp(argv[2], "pipeline-error-", 15)) {
+            dprintf(2,"pipeline descriptors before=%d after=%d %s\n",descriptorsBefore,descriptorsAfter,descriptorsBefore==descriptorsAfter?"PASS":"FAIL");
+            passed=passed&&descriptorsBefore==descriptorsAfter;
+        }
         ios_setStreams(stdin, stdout, stderr);
         if (fclose(input) || fclose(output) || fclose(error)) return 1;
         alarm(0);
         dprintf(STDERR_FILENO, "Dash %s: status=%d bytes=%zu %s\n", argv[2], status, length, passed ? "PASS" : "FAIL");
+        if (!strncmp(argv[2], "pipeline-error-", 15))
+            dprintf(STDERR_FILENO, "Foreground idle after pipeline error: %s\n", foregroundPID == 0 ? "PASS" : "FAIL");
         dlclose(library);
+        unlink(markerPath);
+        snprintf(markerPath, sizeof(markerPath), "%s/wasm", markerDirectory);
+        unlink(markerPath);
+        snprintf(markerPath, sizeof(markerPath), "%s/first-line", markerDirectory);
         unlink(markerPath);
         rmdir(markerDirectory);
         return passed ? 0 : 1;
