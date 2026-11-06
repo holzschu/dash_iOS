@@ -68,6 +68,8 @@
 #if TARGET_OS_IPHONE
 #include "ios_error.h"
 #include <dlfcn.h>
+extern int ashell_register_owned_streams(FILE *, FILE *, FILE *, void **);
+extern void ashell_unregister_owned_streams(void **);
 #define EV_NOFORK 4 /* don't wait after starting a command -- required for pipes */
 #include <fcntl.h>
 extern void	setpwd(const char *, int);
@@ -966,8 +968,8 @@ evalbackcmd(union node *n, struct backcmd *result)
 
 	if (pipe(pip) < 0)
 		sh_error("Pipe call failed");
-	jp = makejob(n, 1);
 #if !TARGET_OS_IPHONE
+	jp = makejob(n, 1);
 	if (forkshell(jp, n, FORK_NOJOB) == 0) {
 		FORCEINTON;
 		close(pip[0]);
@@ -981,12 +983,40 @@ evalbackcmd(union node *n, struct backcmd *result)
 	}
 	close(pip[1]);
 #else
-	FILE* old_stdout = thread_stdout;
-	thread_stdout = fdopen(pip[1], "w");
-	ifsfree();
-	evaltree(n, 0);
-	fclose(thread_stdout); // otherwise we leak one file descriptor
+	jp = NULL;
+	FILE *old_stdout = thread_stdout;
+	FILE *capture = fdopen(pip[1], "w");
+	void *registration = NULL;
+	struct jmploc *savehandler = handler;
+	struct jmploc jmploc;
+	int raised;
+
+	if (capture == NULL) {
+		close(pip[0]);
+		close(pip[1]);
+		sh_error("Cannot open command substitution output");
+	}
+	if (ashell_register_owned_streams(thread_stdin, capture, thread_stderr, &registration)) {
+		fclose(capture);
+		close(pip[0]);
+		sh_error("Cannot register command substitution output");
+	}
+	thread_stdout = capture;
+	raised = setjmp(jmploc.loc);
+	if (!raised) {
+		handler = &jmploc;
+		ifsfree();
+		evaltree(n, 0);
+		flushall();
+	}
 	thread_stdout = old_stdout;
+	handler = savehandler;
+	ashell_unregister_owned_streams(&registration);
+	fclose(capture);
+	if (raised) {
+		close(pip[0]);
+		longjmp(handler->loc, 1);
+	}
 #endif
 	result->fd = pip[0];
 	result->jp = jp;
@@ -1339,6 +1369,37 @@ out:
 	return status;
 }
 
+#if TARGET_OS_IPHONE
+static void
+restore_builtin_streams(FILE *old_stdin, FILE *old_stdout, FILE *old_stderr,
+		       FILE *borrowed_stdin, FILE *borrowed_stdout, FILE *borrowed_stderr)
+{
+	if (old_stdin != NULL) {
+		if (fileno(thread_stdin) > 2 && thread_stdin != borrowed_stdin &&
+		    thread_stdin != thread_stdout && thread_stdin != thread_stderr &&
+		    thread_stdin != borrowed_stdout && thread_stdin != borrowed_stderr)
+			fclose(thread_stdin);
+		thread_stdin = old_stdin;
+	}
+	if (old_stderr != NULL) {
+		if (thread_stderr != thread_stdout && thread_stderr != borrowed_stdin &&
+		    thread_stderr != borrowed_stdout && thread_stderr != borrowed_stderr &&
+		    fileno(thread_stderr) != fileno(old_stderr)) {
+			fflush(thread_stderr);
+			fclose(thread_stderr);
+		}
+		thread_stderr = old_stderr;
+	}
+	if (old_stdout != NULL) {
+		fflush(thread_stdout);
+		if (thread_stdout != borrowed_stdin && thread_stdout != borrowed_stdout &&
+		    thread_stdout != borrowed_stderr && fileno(thread_stdout) != fileno(old_stdout))
+			fclose(thread_stdout);
+		thread_stdout = old_stdout;
+	}
+}
+#endif
+
 STATIC int
 evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 {
@@ -1347,6 +1408,14 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 	struct jmploc jmploc;
 	int status;
 	int i;
+#if TARGET_OS_IPHONE
+	FILE *volatile old_stdin = NULL;
+	FILE *volatile old_stdout = NULL;
+	FILE *volatile old_stderr = NULL;
+	FILE *borrowed_stdin = thread_stdin;
+	FILE *borrowed_stdout = thread_stdout;
+	FILE *borrowed_stderr = thread_stderr;
+#endif
 
 	savecmdname = commandname;
 	savehandler = handler;
@@ -1362,42 +1431,17 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 		status = evalcmd(argc, argv, flags);
 	else {
 #if TARGET_OS_IPHONE
-		FILE *old_stdin, *old_stdout, *old_stderr;
-		FILE *borrowed_stdin = thread_stdin;
-		FILE *borrowed_stdout = thread_stdout;
-		FILE *borrowed_stderr = thread_stderr;
-		old_stdin = NULL; 
-		old_stdout = NULL; 
-		old_stderr = NULL; 
-		ios_activateChildStreams(&old_stdin, &old_stdout, &old_stderr);
+		FILE *input = NULL, *output = NULL, *error = NULL;
+		ios_activateChildStreams(&input, &output, &error);
+		old_stdin = input;
+		old_stdout = output;
+		old_stderr = error;
 #endif
 		status = (*cmd->builtin)(argc, argv);
 #if TARGET_OS_IPHONE
-		if (old_stdin != NULL) {
-			fflush(thread_stdin);
-			thread_stdin = old_stdin;
-		}
-		if (old_stderr != NULL) {
-			if (thread_stderr != thread_stdout && thread_stderr != borrowed_stdin &&
-					thread_stderr != borrowed_stdout && thread_stderr != borrowed_stderr) {
-				// Avoid closing ourselves (it can happen)
-				if (fileno(old_stderr) != fileno(thread_stderr)) {
-					fflush(thread_stderr); 
-					fclose(thread_stderr); 
-				}
-			}
-			thread_stderr = old_stderr;
-		}
-		if (old_stdout != NULL) {
-			fflush(thread_stdout);
-			if (thread_stdout != borrowed_stdin && thread_stdout != borrowed_stdout &&
-					thread_stdout != borrowed_stderr)
-				// Avoid closing ourselves (it can happen)
-				if (fileno(thread_stdout) != fileno(old_stdout)) {
-					fclose(thread_stdout);
-				}
-			thread_stdout = old_stdout;
-		}
+		restore_builtin_streams(old_stdin, old_stdout, old_stderr,
+				borrowed_stdin, borrowed_stdout, borrowed_stderr);
+		old_stdin = old_stdout = old_stderr = NULL;
 #endif
 	}
 	flushall();
@@ -1406,6 +1450,11 @@ evalbltin(const struct builtincmd *cmd, int argc, char **argv, int flags)
 	status |= outerr(out1);
 	exitstatus = status;
 cmddone:
+#if TARGET_OS_IPHONE
+	if (i)
+		restore_builtin_streams(old_stdin, old_stdout, old_stderr,
+				borrowed_stdin, borrowed_stdout, borrowed_stderr);
+#endif
 	freestdout();
 	commandname = savecmdname;
 	handler = savehandler;
@@ -1439,7 +1488,7 @@ evalfun(struct funcnode *func, int argc, char **argv, int flags)
 	INTON;
 	shellparam.nparam = argc - 1;
 	shellparam.p = argv + 1;
-	shellparam.optind = 1;
+	shellparam.opt_ind = 1;
 	shellparam.optoff = -1;
 	evaltree(func->n.ndefun.body, flags & EV_TESTED);
 funcdone:

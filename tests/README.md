@@ -77,3 +77,35 @@ Begin installs a borrowed command stream and returns a lease; end waits for its 
 The `pipeline-error-unwind` case supplies the application's optional foreground-PID exchange callback. A producer builtin rejects an invalid export name, unwinds the pipeline and lets its first-line consumer finish without input. The real Dash command returns the native consumer's EOF status 1 with empty output, and the application callback must be back at its initial idle value. The pre-correction pipeline leaves a stale cancellation target. This checks the optional embedding callback contract without asserting the order of internal calls.
 
 The 14 pipeline modes include `command-consumer`, which checks that the native command behind `command first-line` receives `x` and a newline, returns status 0 and leaves the descriptor count unchanged. `pipeline-error-unwind` also requires an unchanged descriptor count. `pipeline-error-next` appends `printf next` after that error and requires the same status 1 and empty output: the dash_iOS baseline also aborts the list (desktop dash runs the next command). Both error cases require foreground restoration and unchanged descriptors. `unset-semantics` and `unset-environment` check missing variables and valid child environment entries.
+
+# Nested login profile
+
+`login-profile.m` runs real commands through ios_system with six Dash frameworks. Its disposable `HOME/Documents/.profile` invokes an interactive child Dash. A noninteractive `dash -c` command and a script must skip the profile. Seven explicit `dash -lc` invocations and one interactive `dash -ic` invocation without an inherited marker must each read the profile once and capture exactly `CHILD_OKROOT_OK`. The combined output must be exactly `COMMAND_OKSCRIPT_OK` followed by those eight pairs (139 bytes), with no stderr and caller streams left open until the fixture closes them. The eight login roots also exercise reuse beyond the six interpreter slots. The fixture applies and checks the stock `alias sh dash` command to match the embedding app's dispatch configuration. The twenty-second alarm bounds recursion or a stalled wait.
+
+Prepare a probe bundle directory with `Frameworks/ios_system.framework`, all six same-source `dash`, `dashA` through `dashE` frameworks, and ios_system's `Resources/commandDictionary.plist` beside the executable. Use the caller-owned stream prerequisite described above. Build and run with the selected Simulator:
+
+```sh
+xcrun --sdk iphonesimulator clang -target arm64-apple-ios15.0-simulator -fobjc-arc -DNDEBUG -Wall -Wextra -Wno-unused-parameter -F "$PROBE/Frameworks" -framework ios_system -framework Foundation -Wl,-rpath,@executable_path/Frameworks tests/login-profile.m -o "$PROBE/login-profile"
+for framework in "$PROBE"/Frameworks/*.framework; do codesign --force --sign - "$framework"; done
+codesign --force --sign - "$PROBE/login-profile"
+xcrun simctl spawn "$SIMULATOR_UDID" "$PROBE/login-profile"
+```
+
+The iOS login marker must be exported through Dash's variable table so a child inherits it. Login selection must happen after option parsing: noninteractive commands and scripts must not implicitly read the login profile. Removing only the exported Dash variable from the corrected code makes the interactive child reread the profile and exhaust the pool: `completed=0 bytes=66 visits=6 FAIL`, exit 1. With corrected login selection and marker export, it reports `completed=8 bytes=139 visits=8 PASS`, exit 0. This checks arm64 Simulator command behavior; physical-device startup remains a separate check.
+# Input lifetime
+
+`input-lifetime.m` runs Dash through the public ios_system entry with real caller-owned input/output/error streams. The `borrowed` case runs a command string; `script` runs an owned temporary script. Both read caller input, check exact output and empty stderr, compare open descriptor counts, then rewind and read the original input again before closing all three streams.
+
+`stdout-alias` redirects a command group's descriptor 9 from the caller's stdout, then writes through it. It checks that the bytes reach the caller's output stream and that the original descriptor is restored. Without mapping the source descriptor to the thread-local stream, the output goes to the process stdout and the case fails.
+
+`stderr-dup` writes through `>&2` and checks exact caller stderr and empty stdout. Without the thread-local source mapping, the output goes to process stderr and builtin cleanup closes that process descriptor.
+
+Build as for `pipelines.m`, replacing the source and executable name with `input-lifetime.m` and `input-lifetime`. Run each case in a fresh process:
+
+```sh
+for scenario in borrowed script stdout-alias stderr-dup; do
+    xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/.build/probe/input-lifetime" "$PWD/.build/dash/src/dash" "$scenario"
+done
+```
+
+Before the borrowed-input fix, `borrowed` exits 1 with descriptors `8/7` and input close `-1`; `script` remains green with `8/8`. With the fix, both exit 0 with descriptors `8/8`, successful stream closes and `PASS`.
