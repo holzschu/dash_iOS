@@ -182,6 +182,19 @@ initvar(void)
 	struct var *vp;
 	struct var *end;
 	struct var **vpp;
+#if TARGET_OS_IPHONE
+	/* varinit outlives each run of this interpreter: its texts can still point
+	 * into the previous command's environment, which may already be freed. */
+	static struct var defaults[sizeof(varinit) / sizeof(varinit[0])];
+	static int saved;
+
+	if (saved)
+		memcpy(varinit, defaults, sizeof(varinit));
+	else {
+		memcpy(defaults, varinit, sizeof(varinit));
+		saved = 1;
+	}
+#endif
 
 	vp = varinit;
 	end = vp + sizeof(varinit) / sizeof(varinit[0]);
