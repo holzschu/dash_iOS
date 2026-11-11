@@ -66,3 +66,19 @@ done
 ```
 
 Before the borrowed-input fix, `borrowed` exits 1 with descriptors `8/7` and input close `-1`; `script` remains green with `8/8`. With the fix, both exit 0 with descriptors `8/8`, successful stream closes and `PASS`.
+
+# Environment reentry
+
+`environment-reentry.m` loads one Dash image and invokes its real entry through ios_system on three successive command threads. The fixture supplies the embedding runtime's `environmentVariables` boundary for Dash, using page-backed `PATH` and `TERM` strings. After each command finishes, `mprotect(PROT_NONE)` retires its environment page. This makes a stale read on the next run deterministic. Upstream ios_system currently leaks the old strings; the fixture exercises the lifetime contract needed when those environments are freed.
+
+Each run must print its current `PATH` and `TERM` and resolve an executable marker through `command -v`, with no stderr or command failure. The same image stays loaded throughout; fresh command threads reset its thread-local state. The final result must be `environment reentry: completed=3 bytes=... PASS`. Without the varinit reset, the second invocation reads the protected first environment: ios_system reports a bus error and the fixture exits 1 after one completed run.
+
+Prepare the probe directory and build Dash as for `pipelines.m`, adding `-flat_namespace` to Dash's `LDFLAGS`. This allows the fixture executable to supply `environmentVariables`; calls outside the Dash thread delegate to the real runtime. Compile and run the fixture with the same ios_system framework:
+
+```sh
+xcrun --sdk iphonesimulator clang -target arm64-apple-ios15.0-simulator -fobjc-arc -Wall -Wextra -Wno-unused-parameter -F .build/probe/Frameworks -framework ios_system -framework Foundation -Wl,-rpath,@executable_path/Frameworks -Wl,-export_dynamic tests/environment-reentry.m -o .build/probe/environment-reentry
+codesign --force --sign - .build/probe/Frameworks/ios_system.framework
+codesign --force --sign - .build/dash/src/dash
+codesign --force --sign - .build/probe/environment-reentry
+xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/.build/probe/environment-reentry" "$PWD/.build/dash/src/dash"
+```
