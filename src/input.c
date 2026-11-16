@@ -159,7 +159,11 @@ preadfd(void)
 
 retry:
 #ifndef SMALL
+#if TARGET_OS_IPHONE
+	if (parsefile->fd == fileno(thread_stdin) && el) {
+#else
 	if (parsefile->fd == 0 && el) {
+#endif
 		static const char *rl_cp;
 		static int el_len;
 
@@ -297,7 +301,11 @@ again:
 	*q = '\0';
 
 #ifndef SMALL
+#if TARGET_OS_IPHONE
+	if (parsefile->fd == fileno(thread_stdin) && hist && something) {
+#else
 	if (parsefile->fd == 0 && hist && something) {
+#endif
 		HistEvent he;
 		INTOFF;
 		history(hist, &he, whichprompt == 1? H_ENTER : H_APPEND,
