@@ -1,0 +1,70 @@
+# Pinned upstream libedit 20260512: retain NO_TTY ioctl guards while allowing custom-reader editing.
+--- a/src/read.c
++++ b/src/read.c
+@@ -426 +426 @@
+-	if (el->el_flags & NO_TTY)
++	if ((el->el_flags & NO_TTY) && el_read_getfn(el) == EL_BUILTIN_GETCFN)
+@@ -433 +433,7 @@
+-	el_resize(el);
++	if ((el->el_flags & NO_TTY) && el_read_getfn(el) != EL_BUILTIN_GETCFN) {
++		int lins, cols;
++		/* Startup prints its own prompt after resetting the editor. */
++		if (terminal_get_size(el, &lins, &cols))
++			terminal_change_size(el, lins, cols);
++	} else
++		el_resize(el);
+@@ -489 +495 @@
+-	if (el->el_flags & NO_TTY) {
++	if ((el->el_flags & NO_TTY) && el_read_getfn(el) == EL_BUILTIN_GETCFN) {
+--- a/src/tty.c
++++ b/src/tty.c
+@@ -998,0 +999,2 @@
++	if (el->el_flags & NO_TTY)
++		return 0;
+@@ -1083,0 +1086,2 @@
++	if (el->el_flags & NO_TTY)
++		return 0;
+--- a/src/terminal.c
++++ b/src/terminal.c
+@@ -84,0 +85 @@
++#include "read.h"
+@@ -931,0 +933,19 @@
++	/* Socket editors get live session dimensions through EL_GETENV. */
++	if ((el->el_flags & NO_TTY) && el_read_getfn(el) != EL_BUILTIN_GETCFN) {
++		const char *width = (el->el_getenv)("COLUMNS");
++		const char *height = (el->el_getenv)("LINES");
++		char *end;
++		long value;
++		if (width) {
++			value = strtol(width, &end, 10);
++			if (!*end && value >= 2 && value <= 9999)
++				*cols = (int)value;
++		}
++		if (height) {
++			value = strtol(height, &end, 10);
++			if (!*end && value >= 1 && value <= 9999)
++				*lins = (int)value;
++		}
++		return Val(T_co) != *cols || Val(T_li) != *lins;
++	}
++
+@@ -964,0 +985,8 @@
++	int socket_editor = (el->el_flags & NO_TTY) &&
++	    el_read_getfn(el) != EL_BUILTIN_GETCFN;
++	/* The embedding terminal reflows wrapped cells before notifying the editor. */
++	if (socket_editor && cols >= 2 && Val(T_co) >= 2) {
++		size_t offset = (size_t)cur.v * (size_t)Val(T_co) + (size_t)cur.h;
++		cur.v = (int)(offset / (size_t)cols);
++		cur.h = (int)(offset % (size_t)cols);
++	}
+--- a/src/el.c
++++ b/src/el.c
+@@ -654,2 +654,6 @@
+-	if (terminal_get_size(el, &lins, &cols))
+-		terminal_change_size(el, lins, cols);
++	if (terminal_get_size(el, &lins, &cols) &&
++	    terminal_change_size(el, lins, cols) == 0 &&
++	    (el->el_flags & NO_TTY) && el_read_getfn(el) != EL_BUILTIN_GETCFN) {
++		re_refresh(el);
++		terminal__flush(el);
++	}
