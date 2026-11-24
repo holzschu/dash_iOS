@@ -83,7 +83,8 @@ socket_delete_next(EditLine *line, int ch)
 		return CC_ERROR;
 	if (input->cursor == input->lastchar)
 		return CC_NORM;
-	(void)el_cursor(line, 1);
+	// This one is problematic. We need to do the same with only the "standard" libedit.
+	// (void)el_cursor(line, 1);
 	el_deletestr(line, 1);
 	return CC_REFRESH;
 }
@@ -204,8 +205,9 @@ histedit(void)
 				if (socket_input && socket_input[0] == '1' && socket_input[1] == '\0') {
 					/* The embedded shell must not own process-global libedit signals. */
 					el_set(el, EL_SIGNAL, 0);
-					if (el_wset(el, EL_GETENV, getenv) != 0)
-						sh_error("cannot configure socket editor environment");
+					// deactivate el_wset(el, EL_GETENV, getenv) since it won't change anything.
+					// if (el_wset(el, EL_GETENV, getenv) != 0)
+					// 	sh_error("cannot configure socket editor environment");
 					const char *cols = getenv("COLUMNS"), *rows = getenv("LINES");
 					if (cols && el_set(el, EL_SETTC, "co", cols, NULL) != 0)
 						sh_error("cannot configure socket editor columns");
