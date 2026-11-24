@@ -4,6 +4,10 @@ OSX_SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
 IOS_SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
 SIM_SDKROOT=$(xcrun --sdk iphonesimulator --show-sdk-path)
 
+# The SDK has strchrnul since iOS 18.4; both targets still support iOS 15.
+ac_cv_func_strchrnul=no
+export ac_cv_func_strchrnul
+
 make distclean
 ./configure CC=clang CXX=clang++ \
 	CC_FOR_BUILD="clang -isysroot ${OSX_SDKROOT} -DJOBS=0" \
@@ -12,7 +16,6 @@ make distclean
 	CXXFLAGS="-arch arm64 -miphoneos-version-min=15.0 -isysroot ${IOS_SDKROOT} -DJOBS=0 -fembed-bitcode -Dstat64=stat -Dlstat64=lstat -Dfstat64=fstat -DUSE_GLIBC_STDIO=1 -DFLUSHERR=1 -I${PWD}" \
 	LDFLAGS="-arch arm64 -miphoneos-version-min=15.0 -isysroot ${IOS_SDKROOT} -DJOBS=0 -fembed-bitcode -dynamiclib -F ${PWD}/ios_system.xcframework/ios-arm64 -framework ios_system" \
 	--build=x86_64-apple-darwin --host=armv8-apple-darwin cross_compiling=yes --with-libedit 
-sed -i bak "s/#define HAVE_STRCHRNUL 1/\/\/&/" config.h
 make -j4 --quiet
 
 for binary in dash dashA dashB dashC dashD dashE
