@@ -43,58 +43,19 @@ The `wasm-*` cases register a stand-in `wasm` command that stacks its call and b
 
 Build with the input-lease API from holzschu/ios_system#183, session preservation from #184, native descriptor detection from #182, and the pipeline prerequisite from holzschu/dash_iOS#1. The native framework used for these checks also includes ios_system#179. Use a framework built from those commits, its matching command dictionary, and a Simulator you own. The libedit dependency must include `libedit-socket.patch`: upstream libedit's NO_TTY path otherwise bypasses editing even with a custom reader.
 
-In a fresh disposable checkout, put ncurses 6.6 host `tic` and `infocmp` on `PATH`. Place the source-built `ios_system.xcframework` at the root (the v3.0.6 release lacks owned-stream exports). Download `https://thrysoee.dk/editline/libedit-20260512-3.1.tar.gz` and `https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz` to `.build`, then build the dependencies:
-
+Build and audit all six XCFramework ZIPs with Xcode, jq and ncurses 6.6 host tools:
 ```sh
-set -e
-root=$PWD
-cd .build
-printf '%s\n' \
-    '432d5e7ea8b0116dd39f2eca7bc11d0eed77faa6b77ea526ace89907c23ea4a0  libedit-20260512-3.1.tar.gz' \
-    '355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11  ncurses-6.6.tar.gz' | shasum -a 256 -c -
-tar -xf libedit-20260512-3.1.tar.gz
-tar -xf ncurses-6.6.tar.gz
-edit_source=$PWD/libedit-20260512-3.1
-ncurses_source=$PWD/ncurses-6.6
-patch -d "$edit_source" -p1 < "$root/libedit-socket.patch"
-build=$("$ncurses_source/config.guess")
-namespace='-Dtgetent=dash_tgetent -Dtgetflag=dash_tgetflag -Dtgetnum=dash_tgetnum -Dtgetstr=dash_tgetstr -Dtgoto=dash_tgoto -Dtputs=dash_tputs'
-for sdk in iphoneos iphonesimulator; do
-    case $sdk in
-        iphoneos) target=arm64-apple-ios15.0; host=armv8-apple-darwin; suffix= ;;
-        iphonesimulator) target=x86_64-apple-ios15.0-simulator; host=x86_64-apple-darwin; suffix=_sim ;;
-    esac
-    flags="-target $target -isysroot $(xcrun --sdk "$sdk" --show-sdk-path)"
-    tinfo=$PWD/tinfo$suffix
-    edit=$PWD/libedit$suffix
-    mkdir -p "$tinfo" "$edit"
-    (cd "$tinfo"; "$ncurses_source/configure" --build="$build" --host="$host" \
-        --with-build-cc=clang --with-termlib --with-ospeed=speed_t --disable-widec --disable-mixed-case \
-        --disable-database --with-fallbacks=xterm-256color,xterm,vt100 \
-        --with-tic-path="$(command -v tic)" --with-infocmp-path="$(command -v infocmp)" \
-        --without-shared --without-debug --without-ada --without-cxx --without-cxx-binding \
-        --without-manpages --without-progs --without-tests --disable-db-install \
-        CC=clang CFLAGS="$flags -O2 $namespace" CPPFLAGS="$flags" LDFLAGS="$flags" LIBS=; \
-        make -C include -j4; make -C ncurses -j4 ../lib/libtinfo.a)
-    (cd "$edit"; ac_cv_lib_ncurses_tgetent=no ac_cv_lib_curses_tgetent=no \
-        ac_cv_lib_termcap_tgetent=no ac_cv_lib_tinfo_tgetent=yes \
-        "$edit_source/configure" --build="$build" --host="$host" \
-        --disable-shared --enable-static --disable-examples CC=clang CFLAGS="$flags -O2" \
-        CPPFLAGS="$flags -I$tinfo/include $namespace" LDFLAGS="$flags -L$tinfo/lib" LIBS=; \
-        make -C src -j4)
-done
-cd "$root"
-sh autogen.sh
-sh build_dash.sh
-sh tests/frameworks.sh
+PATH="$(brew --prefix ncurses)/bin:$PATH" bash build_dash.sh
 ```
+
+This builds and checks arm64 iOS and arm64/x86_64 Simulator at deployment target 15. The ZIPs, checksums and audit are under `.build/dash-xcframeworks/dist`. The negative check changes the Simulator metadata in a temporary ZIP and verifies that the audit rejects it.
 
 `-load_hidden` keeps both archives' globals local to each framework. The terminal descriptions are compiled in; no runtime terminfo database is needed. For the socket probe, put the matching x86_64 Simulator `ios_system.framework` in `.build/probe/Frameworks` and its command dictionary beside the probe. Set `SIMULATOR_UDID` to a booted x86_64-capable Simulator:
 
 ```sh
 xcrun --sdk iphonesimulator clang -target x86_64-apple-ios15.0-simulator -fobjc-arc -Wall -Wextra -Wno-unused-parameter -F .build/probe/Frameworks -framework ios_system -framework Foundation -Wl,-rpath,@executable_path/Frameworks -Wl,-export_dynamic tests/socket-input.m -o .build/probe/socket-input
 for scenario in line context foreground delete forward-delete raw cancel nested-cancel resize repeat; do
-    xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/.build/probe/socket-input" "$PWD/build/Release-iphonesimulator/dash.framework/dash" "$scenario" || {
+    xcrun simctl spawn "$SIMULATOR_UDID" "$PWD/.build/probe/socket-input" "$PWD/.build/dash-xcframeworks/slices/Release-iphonesimulator/dash.framework/dash" "$scenario" || {
         printf 'Socket probe failed: %s\n' "$scenario" >&2
         exit 1
     }
