@@ -14,8 +14,8 @@ make distclean
 	CFLAGS="-std=gnu17 -arch arm64 -miphoneos-version-min=15.0 -isysroot ${IOS_SDKROOT} -DJOBS=0 -fembed-bitcode -Dstat64=stat -Dlstat64=lstat -Dfstat64=fstat -DUSE_GLIBC_STDIO=1 -DFLUSHERR=1 -I${PWD}" \
 	CPPFLAGS="-arch arm64 -miphoneos-version-min=15.0 -isysroot ${IOS_SDKROOT} -DJOBS=0 -fembed-bitcode -Dstat64=stat -Dlstat64=lstat -Dfstat64=fstat -DUSE_GLIBC_STDIO=1 -DFLUSHERR=1 -I${PWD}" \
 	CXXFLAGS="-arch arm64 -miphoneos-version-min=15.0 -isysroot ${IOS_SDKROOT} -DJOBS=0 -fembed-bitcode -Dstat64=stat -Dlstat64=lstat -Dfstat64=fstat -DUSE_GLIBC_STDIO=1 -DFLUSHERR=1 -I${PWD}" \
-	LDFLAGS="-arch arm64 -miphoneos-version-min=15.0 -isysroot ${IOS_SDKROOT} -DJOBS=0 -fembed-bitcode -dynamiclib -F ${PWD}/ios_system.xcframework/ios-arm64 -framework ios_system" \
-	--build=x86_64-apple-darwin --host=armv8-apple-darwin cross_compiling=yes --with-libedit 
+	LDFLAGS="-arch arm64 -miphoneos-version-min=15.0 -isysroot ${IOS_SDKROOT} -DJOBS=0 -fembed-bitcode -dynamiclib -F ${PWD}/ios_system.xcframework/ios-arm64 -framework ios_system -L${PWD}/.build/libedit/src/.libs" \
+	--build=x86_64-apple-darwin --host=armv8-apple-darwin cross_compiling=yes --with-libedit LIBS="-Wl,-load_hidden,${PWD}/.build/libedit/src/.libs/libedit.a -Wl,-load_hidden,${PWD}/.build/tinfo/lib/libtinfo.a"
 make -j4 --quiet
 
 for binary in dash dashA dashB dashC dashD dashE
@@ -38,8 +38,8 @@ make distclean
 	CFLAGS="-std=gnu17 -arch x86_64 -miphonesimulator-version-min=15.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode -DJOBS=0 -Dstat64=stat -Dlstat64=lstat -Dfstat64=fstat -DUSE_GLIBC_STDIO=1 -DFLUSHERR=1 -I${PWD}" \
 	CPPFLAGS="-arch x86_64 -miphonesimulator-version-min=15.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode -DJOBS=0 -Dstat64=stat -Dlstat64=lstat -Dfstat64=fstat -DUSE_GLIBC_STDIO=1 -DFLUSHERR=1 -I${PWD}" \
 	CXXFLAGS="-arch x86_64 -miphonesimulator-version-min=15.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode -DJOBS=0 -Dstat64=stat -Dlstat64=lstat -Dfstat64=fstat -DUSE_GLIBC_STDIO=1 -DFLUSHERR=1 -I${PWD}" \
-	LDFLAGS="-arch x86_64 -miphonesimulator-version-min=15.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode -dynamiclib -F ${PWD}/ios_system.xcframework/ios-arm64_x86_64-simulator -framework ios_system" \
-	--build=x86_64-apple-darwin --host=x86_64-apple-darwin cross_compiling=yes --with-libedit 
+	LDFLAGS="-arch x86_64 -miphonesimulator-version-min=15.0 -isysroot ${SIM_SDKROOT} -fembed-bitcode -dynamiclib -F ${PWD}/ios_system.xcframework/ios-arm64_x86_64-simulator -framework ios_system -L${PWD}/.build/libedit_sim/src/.libs" \
+	--build=x86_64-apple-darwin --host=x86_64-apple-darwin cross_compiling=yes --with-libedit LIBS="-Wl,-load_hidden,${PWD}/.build/libedit_sim/src/.libs/libedit.a -Wl,-load_hidden,${PWD}/.build/tinfo_sim/lib/libtinfo.a"
 make -j4 --quiet
 
 for binary in dash dashA dashB dashC dashD dashE
