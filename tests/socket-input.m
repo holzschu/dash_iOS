@@ -32,8 +32,7 @@ int ashell_pane_wait_editor_input(FILE *input) {
         char event;
         if (read(resizeEvent[0], &event, 1) != 1) return -EIO;
         atomic_fetch_add(&resizeHandled, 1);
-        ios_setenv("COLUMNS", "40", 1);
-        ios_setenv("LINES", "12", 1);
+        ios_setWindowSize(40, 12, "socket-input-probe");
         return events[0].revents & POLLIN ? 1 : 2;
     }
     return 0;
@@ -151,8 +150,7 @@ static int runProbe(int argc, char **argv) {
         ios_switchSession("socket-input-probe");
         ios_setenv("ASHELL_IOS_SOCKET_INPUT", "1", 1);
         ios_setenv("SOCKET_CONTEXT", "session-value", 1);
-        ios_setenv("COLUMNS", "80", 1);
-        ios_setenv("LINES", "24", 1);
+        ios_setWindowSize(80, 24, "socket-input-probe");
         int sockets[2];
         if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets)) return 2;
         FILE *input = fdopen(dup(sockets[0]), "r");
@@ -172,7 +170,7 @@ static int runProbe(int argc, char **argv) {
         replaceCommand(@"socket-cat", @"socket_cat_main", false);
         joinMainThread = false;
         pid_t root = ios_fork();
-        ios_system("dash -i");
+        ios_system(!strcmp(scenario, "forward-delete") || !strcmp(scenario, "resize") ? "dash -i -E" : "dash -i");
         BOOL passed = receiveUntil(sockets[1], "probe> ");
         if (passed && !strcmp(argv[2], "line"))
             passed = sendText(sockets[1], "printf 'UNICODE=é\\n'\r") && receiveUntil(sockets[1], "UNICODE=é\n");
@@ -180,6 +178,8 @@ static int runProbe(int argc, char **argv) {
             passed = sendText(sockets[1], "printf 'CONTEXT=%s\\n' \"$SOCKET_CONTEXT\"\n") && receiveUntil(sockets[1], "CONTEXT=session-value\n");
         else if (passed && !strcmp(argv[2], "foreground"))
             passed = sendText(sockets[1], "socket-cat\n") && receiveUntil(sockets[1], "CAT_PAYLOAD\n");
+        else if (passed && !strcmp(argv[2], "forward-delete"))
+            passed = sendText(sockets[1], "printf '%s\\n' abc\002\004\r") && receiveUntil(sockets[1], "\nab\n");
         else if (passed && !strcmp(argv[2], "delete"))
             passed = sendText(sockets[1], "\004printf 'DELETE_OK\\n'\n") && receiveUntil(sockets[1], "DELETE_OK\n");
         else if (strcmp(argv[2], "raw") && strcmp(argv[2], "cancel") && strcmp(argv[2], "resize") && strcmp(argv[2], "nested-cancel")) passed = NO;
@@ -193,10 +193,11 @@ static int runProbe(int argc, char **argv) {
             if (passed) passed = receiveUntil(sockets[1], "probe> ");
         }
         if (passed && !strcmp(argv[2], "resize")) {
-            passed = sendText(sockets[1], "printf 'RESIZE_OK");
-            if (passed) passed = receiveUntil(sockets[1], "RESIZE_OK");
+            /* Prompt plus command occupies 68 cells; after reflow its end is on column 29. */
+            passed = sendText(sockets[1], "printf 'RESIZE_OK'; #123456789012345678901234567890123456789Z");
+            if (passed) passed = receiveUntil(sockets[1], "789Z");
             if (passed) passed = write(resizeEvent[1], "r", 1) == 1;
-            if (passed) passed = sendText(sockets[1], "\\n'\n") && receiveUntil(sockets[1], "RESIZE_OK\n");
+            if (passed) passed = sendText(sockets[1], "\001\005\n") && receiveUntil(sockets[1], "\033[29G\nRESIZE_OK");
             passed = passed && atomic_load(&resizeHandled) == 1;
         }
         if (passed)
