@@ -43,9 +43,10 @@ The `wasm-*` cases register a stand-in `wasm` command that stacks its call and b
 
 Build with the input-lease API from holzschu/ios_system#183, session preservation from #184, native descriptor detection from #182, and the pipeline prerequisite from holzschu/dash_iOS#1. The native framework used for these checks also includes ios_system#179. Use a framework built from those commits, its matching command dictionary, and a Simulator you own. The libedit dependency must include `libedit-socket.patch`: upstream libedit's NO_TTY path otherwise bypasses editing even with a custom reader.
 
-Build and audit all six XCFramework ZIPs with Xcode, jq and ncurses 6.6 host tools:
+Build and audit all six XCFramework ZIPs with Xcode, jq and the ncurses 6.6 host tools. Put the directory containing the 6.6 `tic` and `infocmp` first in `PATH`, ahead of any other ncurses version. Both `tic -V` and `infocmp -V` must report ncurses 6.6 (a build date suffix is fine).
+
 ```sh
-PATH="$(brew --prefix ncurses)/bin:$PATH" bash build_dash.sh
+bash build_dash.sh
 ```
 
 This builds and checks arm64 iOS and arm64/x86_64 Simulator at deployment target 15. The ZIPs, checksums and audit are under `.build/dash-xcframeworks/dist`. The negative check changes the Simulator metadata in a temporary ZIP and verifies that the audit rejects it.

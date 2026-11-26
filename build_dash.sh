@@ -1,6 +1,28 @@
 #!/bin/bash
 set -euo pipefail
 export LC_ALL=C
+
+ncurses_host_tool() {
+    local tool=$1 path version
+    if ! path=$(type -P "$tool"); then
+        printf 'ncurses 6.6 host tool %s was not found in PATH.\n' "$tool" >&2
+        return 1
+    fi
+    [[ $path = /* ]] || path="$PWD/$path"
+    if ! version=$("$path" -V 2>&1); then
+        printf 'Could not read the ncurses version from %s: %s\n' "$path" "$version" >&2
+        return 1
+    fi
+    if [[ ! $version =~ ^ncurses[[:blank:]]+6\.6(\.[0-9]+)?$ ]]; then
+        printf 'Expected ncurses 6.6 from %s (%s), got "%s". Put the 6.6 host tools first in PATH.\n' \
+            "$tool" "$path" "$version" >&2
+        return 1
+    fi
+    printf '%s\n' "$path"
+}
+
+tic=$(ncurses_host_tool tic)
+infocmp=$(ncurses_host_tool infocmp)
 command -v jq >/dev/null || { echo 'jq is required to audit the XCFramework plists.' >&2; exit 1; }
 repo=$(cd "$(dirname "$0")" && pwd)
 work="$repo/.build/dash-xcframeworks"
@@ -52,12 +74,6 @@ find "$src/dash" -type f -exec touch -t 202001010000 {} +
 
 host=$(sh "$src/ncurses/config.guess")
 host_sdk=$(xcrun --sdk macosx --show-sdk-path)
-tic=$(command -v tic)
-infocmp=$(command -v infocmp)
-if [[ $("$tic" -V) != 'ncurses 6.6'* || $("$infocmp" -V) != 'ncurses 6.6'* ]]; then
-    echo 'Put ncurses 6.6 host tic and infocmp on PATH.' >&2
-    exit 1
-fi
 namespace='-Dtgetent=dash_tgetent -Dtgetflag=dash_tgetflag -Dtgetnum=dash_tgetnum -Dtgetstr=dash_tgetstr -Dtgoto=dash_tgoto -Dtputs=dash_tputs'
 
 build_slice() (

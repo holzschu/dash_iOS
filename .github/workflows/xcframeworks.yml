@@ -19,6 +19,9 @@ jobs:
           persist-credentials: false
           # Exercise build paths that contain spaces.
           path: source checkout
+      - name: Check ncurses host tool selection
+        working-directory: source checkout
+        run: bash tests/host-ncurses.sh
       - name: Build and audit XCFrameworks
         working-directory: source checkout
         run: |
