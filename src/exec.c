@@ -324,6 +324,32 @@ printentry(struct tblentry *cmdp)
 
 
 
+#if TARGET_OS_IPHONE
+/* ios_system dispatches suffixed modules found under the unsuffixed name. */
+STATIC int
+ios_wasm_command(const char *path)
+{
+	struct stat64 st;
+	size_t len = strlen(path);
+	char *file;
+	int found;
+
+	/* SIGINT can longjmp out of lookup before the temporary buffer is freed. */
+	INTOFF;
+	file = ckmalloc(len + sizeof ".wasm3");
+	memcpy(file, path, len);
+	memcpy(file + len, ".wasm3", sizeof ".wasm3");
+	found = stat64(file, &st) == 0 && S_ISREG(st.st_mode);
+	if (!found) {
+		file[len + sizeof ".wasm" - 1] = '\0';
+		found = stat64(file, &st) == 0 && S_ISREG(st.st_mode);
+	}
+	ckfree(file);
+	INTON;
+	return found;
+}
+#endif
+
 /*
  * Resolve a command name.  If you change this routine, you may have to
  * change the shellexec routine as well.
@@ -447,6 +473,10 @@ loop:
 #endif
 			if (errno != ENOENT && errno != ENOTDIR)
 				e = errno;
+#if TARGET_OS_IPHONE
+			else if (!lpathopt && ios_wasm_command(fullname))
+				goto ios_command;
+#endif
 			goto loop;
 		}
 		e = EACCES;	/* if we fail, this will be the error */
@@ -489,6 +519,16 @@ loop:
 		INTON;
 		goto success;
 	}
+
+#if TARGET_OS_IPHONE
+	if (ios_executable(name)) {
+ ios_command:
+		/* ios_execve resolves the original name, not a filesystem alias. */
+		entry->cmdtype = CMDNORMAL;
+		entry->u.index = -1;
+		return;
+	}
+#endif
 
 	/* We failed.  If there was an entry for this command, delete it */
 	if (cmdp && updatetbl)
