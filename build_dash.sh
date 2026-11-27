@@ -82,6 +82,7 @@ build_slice() (
     if [[ $sdk == iphonesimulator ]]; then target+=-simulator; fi
     sysroot=$(xcrun --sdk "$sdk" --show-sdk-path)
     flags="-target $target -isysroot $sysroot"
+    build_flags="-target arm64-apple-macos15.0 -isysroot $(xcrun --sdk macosx --show-sdk-path)"
     tinfo="$out/tinfo"
     edit="$out/libedit"
     core="$out/core"
@@ -92,7 +93,7 @@ build_slice() (
     (
         cd "$tinfo"
         "$src/ncurses/configure" --build="$host" --host="$arch-apple-darwin" \
-            --with-build-cc=clang --with-termlib --with-ospeed=speed_t --disable-widec --disable-mixed-case \
+            --with-build-cc="clang $build_flags" --with-termlib --with-ospeed=speed_t --disable-widec --disable-mixed-case \
             --disable-database --with-fallbacks=xterm-256color,xterm,vt100 \
             --with-tic-path="$tic" --with-infocmp-path="$infocmp" \
             --without-shared --without-debug --without-ada --without-cxx --without-cxx-binding \
